@@ -20,10 +20,13 @@ Prototype.
 
 ```bash
 pysqlmut generate scripts/sql/refresh.sql --dialect snowflake --show   # generate and show the mutants
-pysqlmut run --report pysqlmut-report.json                          # run tests against every mutant
-pysqlmut report pysqlmut-report.json                                # survivors grouped by the code they changed
-pysqlmut accept pysqlmut-report.json                                # accept reviewed survivors
+pysqlmut run --report pysqlmut-report.json                             # run tests against every mutant
+pysqlmut report pysqlmut-report.json                                   # survivors grouped by the code they changed
+pysqlmut accept pysqlmut-report.json                                   # accept reviewed survivors
 ```
+
+`list` is an alias for `generate`. Mutants are not stored anywhere, so listing them means generating
+them from the SQL each time; no tests run.
 
 `run` exits with 1 while survivors remain that nobody accepted.
 

@@ -192,8 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pysqlmut", description="Mutation testing for SQL.")
     commands = parser.add_subparsers(dest="command_name", required=True)
 
+    # Mutants are not stored anywhere, so listing them means generating them; "list" stays as an alias.
     generate_parser = commands.add_parser(
-        "generate", help="generate and verify the mutants of SQL files without running tests"
+        "generate", aliases=["list"], help="generate and verify the mutants of SQL files without running tests"
     )
     _add_selection(generate_parser)
     generate_parser.add_argument(
