@@ -1,5 +1,3 @@
-set dotenv-load := false
-
 # List all recipes
 [private]
 default:
@@ -28,5 +26,5 @@ typecheck:
 test *ARGS='':
     uv run pytest {{ARGS}}
 
-# Everything CI would run
+# Lint, type check and test
 check: lint typecheck test

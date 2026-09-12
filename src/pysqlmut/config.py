@@ -10,6 +10,9 @@ from typing import Any
 
 from pysqlmut.operators import ALL_OPERATORS
 
+DEFAULT_WORKERS = 1
+DEFAULT_TIMEOUT = 300.0
+
 # Directories no mutant is taken from: the project copies share the virtual environment, and the rest is cache.
 IGNORED_DIRECTORIES = (".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "node_modules")
 
@@ -50,8 +53,8 @@ class Config:
     pytest_python: str | None = None
     tests: tuple[str, ...] = ()
     pytest_args: tuple[str, ...] = ()
-    workers: int = 1
-    timeout: float = 300.0
+    workers: int = DEFAULT_WORKERS
+    timeout: float = DEFAULT_TIMEOUT
 
     def __post_init__(self) -> None:
         if self.operators is not None and not self.operators:
@@ -126,7 +129,7 @@ def load_config(project: Path) -> Config:
         if pattern is None:
             raise ValueError("every [[tool.pysqlmut.file]] needs a pattern")
         rules.append(FileRule(pattern, _strings(rule, "exclude-operators", "[[tool.pysqlmut.file]]")))
-    workers = _number(settings, "workers", 1, "[tool.pysqlmut]")
+    workers = _number(settings, "workers", DEFAULT_WORKERS, "[tool.pysqlmut]")
     if not isinstance(workers, int):
         raise ValueError("[tool.pysqlmut] workers must be a whole number")
     table = "[tool.pysqlmut]"
@@ -142,5 +145,5 @@ def load_config(project: Path) -> Config:
         tests=_strings(pytest_settings, "tests", "[tool.pysqlmut.pytest]"),
         pytest_args=_strings(pytest_settings, "args", "[tool.pysqlmut.pytest]"),
         workers=workers,
-        timeout=float(_number(settings, "timeout", 300.0, table)),
+        timeout=float(_number(settings, "timeout", DEFAULT_TIMEOUT, table)),
     )

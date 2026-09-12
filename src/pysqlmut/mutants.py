@@ -123,6 +123,8 @@ def _generate_part_in_worker(
 ) -> tuple[list[Mutant], Counter[tuple[str, str]]]:
     source = _worker_sources.get((path, dialect))
     if source is None or source.text != text:
+        # One file at a time: the parts of a file arrive together, so earlier files are not needed again.
+        _worker_sources.clear()
         source = _worker_sources[path, dialect] = SqlSource(path, text, dialect)
     return _generate_part(source, names, part)
 
@@ -131,32 +133,34 @@ def _generate_part(
     source: SqlSource, names: tuple[str, ...], part: _Part
 ) -> tuple[list[Mutant], Counter[tuple[str, str]]]:
     chosen: list[Operator] = [ALL_OPERATORS[name] for name in names]
-    generation = Generation(source)
     skipped = skipped_lines(source.text)
     statement = source.statements[part.statement]
     original = statement.tree.sql(dialect=source.dialect)
     nodes = list(statement.tree.walk())
+    mutants: list[Mutant] = []
+    rejected: Counter[tuple[str, str]] = Counter()
     for index in range(part.start, part.stop):
         for operator in chosen:
             for candidate in operator(source, nodes[index], statement.span.start):
-                patch = candidate.patch
-                lines = range(source.line_of(patch.start), source.line_of(patch.end) + 1)
-                if skipped and not skipped.isdisjoint(lines):
-                    generation.rejected[candidate.operator, "skipped by comment"] += 1
-                    continue
-                if candidate.equivalent:
-                    generation.rejected[candidate.operator, f"equivalent: {candidate.equivalent}"] += 1
-                    continue
-                _verify(generation, statement, original, index, candidate)
-    return generation.mutants, generation.rejected
+                outcome = _check(source, statement, original, index=index, candidate=candidate, skipped=skipped)
+                if isinstance(outcome, Mutant):
+                    mutants.append(outcome)
+                else:
+                    rejected[candidate.operator, outcome] += 1
+    return mutants, rejected
 
 
-def _verify(generation: Generation, statement: Statement, original: str, index: int, candidate: Candidate) -> None:
-    source = generation.source
+def _check(
+    source: SqlSource, statement: Statement, original: str, *, index: int, candidate: Candidate, skipped: set[int]
+) -> Mutant | str:
+    """The mutant a candidate makes, or the reason it is rejected."""
     patch = candidate.patch
+    if not skipped.isdisjoint(range(source.line_of(patch.start), source.line_of(patch.end) + 1)):
+        return "skipped by comment"
+    if candidate.equivalent:
+        return f"equivalent: {candidate.equivalent}"
     if not statement.span.start <= patch.start <= patch.end <= statement.span.end:
-        generation.rejected[candidate.operator, "outside statement"] += 1
-        return
+        return "outside statement"
     expected_tree = statement.tree.copy()
     target = list(expected_tree.walk())[index]
     replacement = candidate.mutate(target)
@@ -174,14 +178,9 @@ def _verify(generation: Generation, statement: Statement, original: str, index: 
     try:
         trees = [tree for tree in sqlglot.parse(mutated, read=source.dialect) if tree]
     except SqlglotError:
-        generation.rejected[candidate.operator, "does not parse"] += 1
-        return
+        return "does not parse"
     if len(trees) != 1 or trees[0].sql(dialect=source.dialect, copy=False) != expected:
-        generation.rejected[candidate.operator, "differs from the intended change"] += 1
-        return
+        return "differs from the intended change"
     if expected == original:
-        generation.rejected[candidate.operator, "changes nothing"] += 1
-        return
-    generation.mutants.append(
-        Mutant(source.path, candidate.operator, candidate.description, source.line_of(patch.start), patch)
-    )
+        return "changes nothing"
+    return Mutant(source.path, candidate.operator, candidate.description, source.line_of(patch.start), patch)

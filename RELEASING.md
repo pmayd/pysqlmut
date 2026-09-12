@@ -18,7 +18,7 @@ The pending publisher turns into a normal one with the first upload, which also 
 
 ## Each release
 
-1. Update the version: `uv version --bump minor` (or `patch`, `major`, or `uv version 0.2.0`).
+1. Update the version (not for 0.1.0, which the project already has): `uv version --bump minor` (or `patch`, `major`, or `uv version 0.2.0`).
 2. In `CHANGELOG.md`, rename *Unreleased* to the new version with today's date and start a new empty
    *Unreleased* section.
 3. Run `just check`, commit, and push to `main`; wait for CI to pass.

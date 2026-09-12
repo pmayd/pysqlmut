@@ -5,32 +5,12 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from samples import PAID, TEST_PAID
 from typer.testing import CliRunner
 
 from pysqlmut.cli import app, main
 from pysqlmut.report import load
 from pysqlmut.runner import ACCEPTED, CAUGHT, SURVIVED
-
-PAID = """SELECT customer, SUM(amount) AS total
-FROM orders
-WHERE status = 'paid' AND amount > 0
-GROUP BY customer
-ORDER BY customer;
-"""
-
-# No order has amount 0, so amount > 0 and amount >= 0 give the same result.
-TEST = """
-from pathlib import Path
-
-import duckdb
-
-
-def test_paid_totals():
-    con = duckdb.connect()
-    con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
-    con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('a', 3, 'paid'), ('a', 7, 'open'), ('b', 2, 'paid')")
-    assert con.execute((Path(__file__).parent / "paid.sql").read_text()).fetchall() == [("a", 8), ("b", 2)]
-"""
 
 PYPROJECT = f"""
 [tool.pysqlmut]
@@ -54,7 +34,7 @@ def test_accepted_survivors_are_neither_rerun_nor_reported(tmp_path: Path):
     project.mkdir()
     (project / "pyproject.toml").write_text(PYPROJECT)
     (project / "paid.sql").write_text(PAID)
-    (project / "test_paid.py").write_text(textwrap.dedent(TEST))
+    (project / "test_paid.py").write_text(textwrap.dedent(TEST_PAID))
     report = tmp_path / "report.json"
 
     assert invoke("run", "--project", str(project), "--report", str(report)) == 1
@@ -80,7 +60,7 @@ def test_a_file_sqlglot_cannot_tokenize_is_skipped_and_the_others_still_run(tmp_
     assert "paid.sql: 1 statements" in result.output
 
 
-def paid_project(tmp_path: Path, pyproject: str = PYPROJECT, test: str = TEST) -> Path:
+def paid_project(tmp_path: Path, pyproject: str = PYPROJECT, test: str = TEST_PAID) -> Path:
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(pyproject)

@@ -41,9 +41,12 @@ class Candidate:
 Operator = Callable[[SqlSource, exp.Expr, int], Iterator[Candidate]]
 
 
-def _set(key: str, value: object) -> Callable[[exp.Expr], exp.Expr]:
+def _set(**values: object) -> Callable[[exp.Expr], exp.Expr]:
+    """A tree change that sets arguments of the node; expressions are copied, so every tree gets its own."""
+
     def mutate(node: exp.Expr) -> exp.Expr:
-        node.set(key, value)
+        for key, value in values.items():
+            node.set(key, value.copy() if isinstance(value, exp.Expr) else value)
         return node
 
     return mutate
@@ -75,9 +78,21 @@ _COMPARISONS: dict[type[exp.Expr], tuple[type[exp.Binary], str, TokenType]] = {
 }
 
 
-def comparison(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
-    """Swap = and <>, and move the boundary of <, <=, > and >=."""
-    swap = _COMPARISONS.get(type(node))
+_LOGICAL: dict[type[exp.Expr], tuple[type[exp.Binary], str, TokenType]] = {
+    exp.And: (exp.Or, "OR", TokenType.AND),
+    exp.Or: (exp.And, "AND", TokenType.OR),
+}
+
+
+def _swap_binary(
+    name: str,
+    swaps: dict[type[exp.Expr], tuple[type[exp.Binary], str, TokenType]],
+    source: SqlSource,
+    node: exp.Expr,
+    offset: int,
+) -> Iterator[Candidate]:
+    """Replace the operator of a binary expression by the one the table names for its type."""
+    swap = swaps.get(type(node))
     if swap is None:
         return
     target, text, token_type = swap
@@ -85,30 +100,21 @@ def comparison(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candi
     if index is None:
         return
     yield Candidate(
-        "comparison",
+        name,
         f"{source.tokens[index].text} -> {text}",
         _replace_token(source, index, text),
         lambda n: target(this=n.this, expression=n.expression),
     )
+
+
+def comparison(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
+    """Swap = and <>, and move the boundary of <, <=, > and >=."""
+    return _swap_binary("comparison", _COMPARISONS, source, node, offset)
 
 
 def logical(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
     """Swap AND and OR."""
-    if isinstance(node, exp.And):
-        target, text, token_type = exp.Or, "OR", TokenType.AND
-    elif isinstance(node, exp.Or):
-        target, text, token_type = exp.And, "AND", TokenType.OR
-    else:
-        return
-    index = _token_between(source, node.this, node.expression, offset, {token_type})
-    if index is None:
-        return
-    yield Candidate(
-        "logical",
-        f"{source.tokens[index].text} -> {text}",
-        _replace_token(source, index, text),
-        lambda n: target(this=n.this, expression=n.expression),
-    )
+    return _swap_binary("logical", _LOGICAL, source, node, offset)
 
 
 def drop_condition(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
@@ -197,8 +203,10 @@ def coalesce(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candida
     if not isinstance(node, exp.Coalesce) or "start" not in node.meta:
         return
     name_index = source.token_at(offset + node.meta["start"])
-    call = _call_arguments(source, name_index) if name_index is not None else None
-    if name_index is None or call is None:
+    if name_index is None:
+        return
+    call = _call_arguments(source, name_index)
+    if call is None:
         return
     arguments, close_index = call
     if len(arguments) != len(node.expressions) + 1 or len(arguments) < 2:
@@ -345,13 +353,13 @@ def union(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]
     union_token, following = source.tokens[index], source.tokens[index + 1]
     if following.token_type == TokenType.ALL:
         patch = Patch(union_token.end + 1, following.end + 1, "")
-        yield Candidate("union", "UNION ALL -> UNION", patch, _set("distinct", True), equivalent)
+        yield Candidate("union", "UNION ALL -> UNION", patch, _set(distinct=True), equivalent)
     elif following.token_type == TokenType.DISTINCT:
         patch = _replace_token(source, index + 1, "ALL")
-        yield Candidate("union", "UNION DISTINCT -> UNION ALL", patch, _set("distinct", False), equivalent)
+        yield Candidate("union", "UNION DISTINCT -> UNION ALL", patch, _set(distinct=False), equivalent)
     else:
         patch = Patch(union_token.end + 1, union_token.end + 1, " ALL")
-        yield Candidate("union", "UNION -> UNION ALL", patch, _set("distinct", False), equivalent)
+        yield Candidate("union", "UNION -> UNION ALL", patch, _set(distinct=False), equivalent)
 
 
 _JOIN_MODIFIERS = {TokenType.LEFT, TokenType.INNER, TokenType.OUTER}
@@ -373,19 +381,11 @@ def join_type(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candid
     side, kind = (node.side or "").upper(), (node.kind or "").upper()
     patch_range = (source.tokens[start].start, source.tokens[join_index].end + 1)
 
-    def to_inner(n: exp.Expr) -> exp.Expr:
-        n.set("side", None)
-        n.set("kind", "INNER")
-        return n
-
-    def to_left(n: exp.Expr) -> exp.Expr:
-        n.set("side", "LEFT")
-        n.set("kind", None)
-        return n
-
     if side == "LEFT":
+        to_inner = _set(side=None, kind="INNER")
         yield Candidate("join-type", "LEFT JOIN -> INNER JOIN", Patch(*patch_range, "INNER JOIN"), to_inner)
     elif not side and kind in {"", "INNER"}:
+        to_left = _set(side="LEFT", kind=None)
         yield Candidate("join-type", "INNER JOIN -> LEFT JOIN", Patch(*patch_range, "LEFT JOIN"), to_left)
 
 
@@ -399,18 +399,8 @@ _ARITHMETIC: dict[type[exp.Expr], tuple[type[exp.Binary], str, TokenType]] = {
 
 def arithmetic(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
     """Swap + and -, * and /, and drop a unary minus."""
-    swap = _ARITHMETIC.get(type(node))
-    if swap is not None:
-        target, text, token_type = swap
-        index = _token_between(source, node.this, node.expression, offset, {token_type})
-        if index is not None:
-            yield Candidate(
-                "arithmetic",
-                f"{source.tokens[index].text} -> {text}",
-                _replace_token(source, index, text),
-                lambda n: target(this=n.this, expression=n.expression),
-            )
-    elif isinstance(node, exp.Neg):
+    yield from _swap_binary("arithmetic", _ARITHMETIC, source, node, offset)
+    if isinstance(node, exp.Neg):
         tokens = source.leaf_tokens(node.this, offset)
         if tokens and tokens[0] > 0 and source.tokens[tokens[0] - 1].token_type == TokenType.DASH:
             dash = source.tokens[tokens[0] - 1]
@@ -439,7 +429,7 @@ def distinct(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candida
             )
             if index is not None:
                 patch = Patch(source.tokens[index].start, source.tokens[index + 1].start, "")
-                yield Candidate("distinct", "SELECT DISTINCT -> SELECT", patch, _set("distinct", None))
+                yield Candidate("distinct", "SELECT DISTINCT -> SELECT", patch, _set(distinct=None))
     elif isinstance(node, exp.Count) and isinstance(node.this, exp.Distinct) and len(node.this.expressions) == 1:
         tokens = source.leaf_tokens(node.this.expressions[0], offset)
         if tokens and tokens[0] > 0 and source.tokens[tokens[0] - 1].token_type == TokenType.DISTINCT:
@@ -460,12 +450,8 @@ def case(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
     default = node.args.get("default")
     default_span = source.node_span(default, offset) if default is not None else None
     if default_span is not None and not isinstance(default, exp.Null):
-
-        def else_null(n: exp.Expr) -> exp.Expr:
-            n.set("default", exp.Null())
-            return n
-
-        yield Candidate("case", "ELSE value -> NULL", Patch(default_span.start, default_span.end, "NULL"), else_null)
+        patch = Patch(default_span.start, default_span.end, "NULL")
+        yield Candidate("case", "ELSE value -> NULL", patch, _set(default=exp.Null()))
 
     branches = node.args.get("ifs") or []
     if len(branches) < 2:
@@ -562,16 +548,11 @@ def column(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate
     if replacement is None or index is None:
         return
     text = replacement.sql(dialect=source.dialect)
-
-    def mutate(n: exp.Expr) -> exp.Expr:
-        n.set("this", replacement.copy())
-        return n
-
     yield Candidate(
         "column",
         f"{node.table}.{identifier.name} -> {node.table}.{replacement.name}",
         _replace_token(source, index, text),
-        mutate,
+        _set(this=replacement),
     )
 
 

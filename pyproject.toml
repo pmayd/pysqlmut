@@ -68,7 +68,12 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "src/pysqlmut/cli.py" = ["PLR0917"] # Typer turns each parameter of a command into an option
 "tests/*" = ["S101"]                # pytest asserts
+"examples/*" = ["S101"]             # pytest asserts in the example project
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--import-mode=importlib", "-ra"]
+pythonpath = ["tests"]
+
+[tool.ty.environment]
+extra-paths = ["tests"]

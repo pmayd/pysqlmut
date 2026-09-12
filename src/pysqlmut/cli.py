@@ -87,6 +87,12 @@ def _config(project: Path, dialect: str | None, operators: str | None) -> Config
     return config
 
 
+def _shown(path: Path) -> str:
+    """A path relative to the working directory when it lies below it."""
+    resolved, here = path.resolve(), Path.cwd().resolve()
+    return str(resolved.relative_to(here)) if resolved.is_relative_to(here) else str(path)
+
+
 def _accepted_path(project: Path, option: Path | None, config: Config) -> Path:
     """An --accepted path is relative to the working directory, a setting relative to the project."""
     return option if option is not None else project / (config.accepted or _DEFAULT_ACCEPTED)
@@ -107,7 +113,8 @@ def _generations(files: list[Path] | None, project: Path, config: Config, worker
             _fail(f"{path}: no such file")
         if not resolved.is_relative_to(project):
             _fail(f"{path} is outside the project {project}; pass --project")
-        paths.append(resolved)
+        if resolved not in paths:
+            paths.append(resolved)
     if not paths:
         _fail("no SQL files: pass them or set files in [tool.pysqlmut]")
     with ProcessPoolExecutor(workers) if workers > 1 else nullcontext() as executor:
@@ -208,7 +215,7 @@ def run_command(
     except ValueError as error:
         _fail(str(error))
     how = command or f"pytest workers ({pytest_python})"
-    typer.echo(f"{len(mutants)} mutants, {workers} workers: {how}")
+    typer.echo(f"{len(mutants)} mutants, {workers} worker{'' if workers == 1 else 's'}: {how}")
 
     done = 0
 
@@ -255,7 +262,8 @@ def _summarize(results: list[Result], top: int) -> bool:
     survivors = [r for r in results if r.status in {SURVIVED, NOT_COVERED}]
     groups = report.group(survivors)
     typer.echo(f"\n{len(survivors)} of {len(results)} mutants survived or were not covered, in {len(groups)} groups")
-    typer.echo(report.render(groups, top))
+    if groups:
+        typer.echo(report.render(groups, top))
     if any(r.status == NOT_COVERED for r in results):
         typer.echo(
             "\nNot covered means no test was seen reading the file. With --pytest, reads by subprocesses, "
@@ -322,7 +330,7 @@ def accept_command(
         _fail(str(error))
     new = {accepted.of_result(r) for r in survivors} - known
     accepted.save(path, known | new)
-    typer.echo(f"accepted {len(new)} more survivors; {path} now holds {len(known | new)}")
+    typer.echo(f"accepted {len(new)} more survivors; {_shown(path)} now holds {len(known | new)}")
 
 
 def main() -> None:

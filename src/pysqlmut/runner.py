@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from pysqlmut import accepted as accepted_survivors
-from pysqlmut.config import IGNORED_DIRECTORIES
+from pysqlmut.config import DEFAULT_TIMEOUT, DEFAULT_WORKERS, IGNORED_DIRECTORIES
 from pysqlmut.mutants import Mutant
 from pysqlmut.source import read_text
 
@@ -329,8 +329,8 @@ def run(
     pytest_python: str | None = None,
     tests: Sequence[str] = (),
     pytest_args: Sequence[str] = (),
-    workers: int = 1,
-    timeout: float = 300.0,
+    workers: int = DEFAULT_WORKERS,
+    timeout: float = DEFAULT_TIMEOUT,
     accepted: Collection[accepted_survivors.Fingerprint] = frozenset(),
     progress: Callable[[Result], None] | None = None,
 ) -> list[Result]:
