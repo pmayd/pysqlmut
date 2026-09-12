@@ -14,13 +14,46 @@ change that no test noticed.
 
 ## Status
 
-Early prototype. `pysqlmut list` generates and verifies mutants; running tests against them is next.
+Prototype.
 
 ## Usage
 
 ```bash
-uv run pysqlmut list scripts/sql/refresh.sql --dialect snowflake --show
+pysqlmut list scripts/sql/refresh.sql --dialect snowflake --show   # generate and show the mutants
+pysqlmut run --report pysqlmut-report.json                          # run tests against every mutant
+pysqlmut report pysqlmut-report.json                                # survivors grouped by the code they changed
+pysqlmut accept pysqlmut-report.json                                # accept reviewed survivors
 ```
+
+`run` exits with 1 while survivors remain that nobody accepted.
+
+## Configuration
+
+In the tested project's `pyproject.toml`; command line options override it.
+
+```toml
+[tool.pysqlmut]
+dialect = "snowflake"
+files = ["sql/*.sql"]
+exclude-operators = ["union"]
+accepted = "pysqlmut-accepted.json"
+workers = 8
+timeout = 180
+
+# Long-lived pytest workers that run only the tests reading the mutated file.
+[tool.pysqlmut.pytest]
+python = "uv run python"
+tests = ["tests/sql"]
+args = ["-q", "-x"]
+
+[[tool.pysqlmut.file]]
+pattern = "scripts/sql/labels.sql"
+exclude-operators = ["string-literal"]
+```
+
+Instead of `[tool.pysqlmut.pytest]`, `command = "..."` runs any test command, in a new process per mutant.
+
+In SQL, `-- pysqlmut: skip` excludes its line, and `-- pysqlmut: off` ... `-- pysqlmut: on` a block.
 
 ## Development
 

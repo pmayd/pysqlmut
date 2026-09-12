@@ -29,6 +29,8 @@ _NOT_COPIED = shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_ca
 _WORKER_SCRIPT = Path(__file__).with_name("pytest_worker.py")
 
 CAUGHT, SURVIVED, TIMEOUT, ERROR, NOT_COVERED = "caught", "survived", "timeout", "error", "not covered"
+# A survivor the team accepted earlier; it is not run again.
+ACCEPTED = "accepted"
 # Pytest exit codes: 1 tests failed, 2 interrupted, 3 internal error, 4 usage error, 5 no tests collected.
 _CAUGHT_EXIT_CODES = {1, 2, 3}
 

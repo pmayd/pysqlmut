@@ -92,6 +92,22 @@ def test_case_branches_and_string_literals_change_on_their_own(operator, old, ne
     assert replaced(LABELS, old, new) in mutated(LABELS, operator)
 
 
+def test_comments_exclude_a_line_or_a_block_from_mutation():
+    sql = """SELECT a FROM t WHERE b = 1; -- pysqlmut: skip
+SELECT a FROM t WHERE b = 2;
+-- pysqlmut: off
+SELECT a FROM t WHERE b = 3;
+-- pysqlmut: on
+SELECT a FROM t WHERE b = 4;
+"""
+    mutants = generate(SqlSource(Path("q.sql"), sql, "snowflake"), ["comparison"]).mutants
+    assert sorted({m.line for m in mutants}) == [2, 6]
+
+
+def test_an_empty_operator_list_runs_no_operator():
+    assert generate(SqlSource(Path("q.sql"), QUERY, "snowflake"), []).mutants == []
+
+
 def test_statements_sqlglot_cannot_parse_are_skipped():
     sql = """GRANT SELECT ON TABLE s.t TO ROLE reader;
 EXECUTE IMMEDIATE $$

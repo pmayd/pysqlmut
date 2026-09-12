@@ -1,5 +1,6 @@
 """Generate the mutants of a SQL file and keep only those that change exactly what they claim."""
 
+import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -40,15 +41,42 @@ class Generation:
     rejected: Counter[tuple[str, str]] = field(default_factory=Counter)
 
 
+_DIRECTIVE = re.compile(r"--\s*pysqlmut:\s*(skip|off|on)\b", re.IGNORECASE)
+
+
+def skipped_lines(text: str) -> set[int]:
+    """Lines excluded by comments: `-- pysqlmut: skip` on the line, or between `-- pysqlmut: off` and `on`."""
+    skipped: set[int] = set()
+    off = False
+    for number, line in enumerate(text.splitlines(), 1):
+        match = _DIRECTIVE.search(line)
+        directive = match.group(1).lower() if match else None
+        if directive == "off":
+            off = True
+        if off or directive == "skip":
+            skipped.add(number)
+        if directive == "on":
+            off = False
+    return skipped
+
+
 def generate(source: SqlSource, operators: Iterable[str] | None = None) -> Generation:
-    """Run the operators over every statement and verify each candidate by parsing the patched statement."""
-    chosen: list[Operator] = [ALL_OPERATORS[name] for name in (operators or ALL_OPERATORS)]
+    """Run the operators over every statement and verify each candidate by parsing the patched statement.
+
+    operators=None runs every operator; an empty list runs none.
+    """
+    chosen: list[Operator] = [ALL_OPERATORS[name] for name in (ALL_OPERATORS if operators is None else operators)]
     generation = Generation(source)
+    skipped = skipped_lines(source.text)
     for statement in source.statements:
         nodes = list(statement.tree.walk())
         for index, node in enumerate(nodes):
             for operator in chosen:
                 for candidate in operator(source, node, statement.span.start):
+                    patch = candidate.patch
+                    if skipped and {source.line_of(patch.start), source.line_of(patch.end)} & skipped:
+                        generation.rejected[candidate.operator, "skipped by comment"] += 1
+                        continue
                     _verify(generation, statement, index, candidate)
     return generation
 
