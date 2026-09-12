@@ -1,0 +1,23 @@
+repos:
+  - repo: local
+    hooks:
+      - id: format
+        name: format (ruff)
+        entry: just format
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: typecheck
+        name: type checker (ty)
+        entry: just typecheck
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: test
+        name: test (pytest)
+        entry: just test
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

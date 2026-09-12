@@ -1,0 +1,43 @@
+[project]
+name = "pysqlmut"
+version = "0.1.0"
+description = "Mutation testing for SQL: change SQL files in small, valid ways and report the changes your tests miss."
+readme = "README.md"
+authors = [
+    { name = "Michael Aydinbas", email = "michael.aydinbas@pm.me" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "sqlglot>=30.18",
+]
+
+[project.scripts]
+pysqlmut = "pysqlmut:main"
+
+[build-system]
+requires = ["uv_build>=0.12.12,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "duckdb>=1.5.5",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "ruff>=0.16.7",
+    "ty>=0.0.80",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "C4", "PT", "PL", "PTH", "RET"]
+ignore = [
+    "PLR2004", # magic values read fine in tests and token handling
+    "PLR0911", # operators return early per node shape
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib", "-ra"]
