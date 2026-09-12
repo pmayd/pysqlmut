@@ -4,6 +4,8 @@ Two ways to run tests:
 - A shell command: every mutant starts a new process and runs whatever the command runs.
 - Pytest workers: one long-lived pytest process per copy. A recording baseline run notes which
   test reads which mutated file, and each mutant then runs only the tests that read its file.
+  When a file is read while modules are imported, the worker forks and the fork imports the
+  project's modules again.
 """
 
 import json
@@ -12,12 +14,13 @@ import queue
 import select
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -136,8 +139,15 @@ class PytestWorker:
 
     def _start(self) -> subprocess.Popen[str]:
         if self.process is None:
+            # A process group of its own, so that closing the worker also ends the forks it started.
             self.process = subprocess.Popen(
-                self.command, cwd=self.copy, env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+                self.command,
+                cwd=self.copy,
+                env=self.env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
             )
         return self.process
 
@@ -162,10 +172,11 @@ class PytestWorker:
         return response["reads"]
 
     def run(self, selection: Selection) -> str:
-        if selection.fresh:
-            self.close()
         tests = self.tests if selection.tests is None else list(selection.tests)
-        response = self._request({"args": [*tests, *self.args]})
+        request: dict[str, Any] = {"args": [*tests, *self.args]}
+        if selection.fresh:
+            request["fork"] = True
+        response = self._request(request)
         if response is None:
             return TIMEOUT
         if response["exit"] == 0:
@@ -174,7 +185,8 @@ class PytestWorker:
 
     def close(self) -> None:
         if self.process is not None:
-            self.process.kill()
+            with suppress(ProcessLookupError):
+                os.killpg(self.process.pid, signal.SIGKILL)
             self.process.wait()
             self.process = None
 

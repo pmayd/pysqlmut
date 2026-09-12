@@ -1,14 +1,16 @@
 """The runner classifies mutants by running a real test suite, and never changes the project."""
 
+import os
 import sys
 import textwrap
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from pysqlmut.mutants import generate
-from pysqlmut.runner import CAUGHT, NOT_COVERED, SURVIVED, BaselineFailedError, run
+from pysqlmut.runner import CAUGHT, NOT_COVERED, SURVIVED, TIMEOUT, BaselineFailedError, run
 from pysqlmut.source import SqlSource
 
 PAID = """-- Paid orders per customer.
@@ -104,32 +106,89 @@ def test_a_file_no_test_reads_is_not_covered_and_not_run(project):
     assert {r.status for r in results} == {NOT_COVERED}
 
 
-TEST_PACKAGED = """
-from importlib.resources import files
-
+PACKAGED_SETUP = """
 import duckdb
 
 
-def test_packaged_totals():
+def paid_totals(sql):
     con = duckdb.connect()
     con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
     con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('a', 3, 'paid'), ('b', 2, 'paid')")
-    sql = files("shop").joinpath("paid.sql").read_text()
-    assert con.execute(sql).fetchall() == [("a", 8), ("b", 2)]
+    return con.execute(sql).fetchall()
+"""
+
+TEST_READS_WHEN_CALLED = """
+from importlib.resources import files
+
+
+def test_packaged_totals():
+    assert paid_totals(files("shop").joinpath("paid.sql").read_text()) == [("a", 8), ("b", 2)]
+"""
+
+# Like SQL constants in a module: the file is read once, while the module is imported.
+QUERIES_MODULE = 'from importlib.resources import files\n\nPAID_SQL = files("shop").joinpath("paid.sql").read_text()\n'
+
+TEST_READS_AT_IMPORT = """
+from shop.queries import PAID_SQL
+
+
+def test_imported_totals():
+    assert paid_totals(PAID_SQL) == [("a", 8), ("b", 2)]
+"""
+
+TEST_HANGS = """
+import os
+import time
+
+from shop.queries import PAID_SQL
+
+
+def test_hangs_on_wrong_totals():
+    if paid_totals(PAID_SQL) != [("a", 8), ("b", 2)]:
+        with open({log!r}, "a") as log:
+            log.write(f"{os.getpid()}\\n")
+        time.sleep(120)
 """
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_a_package_imported_from_the_project_is_imported_from_the_copy(tmp_path, monkeypatch, mode):
-    # Like an editable install: the package is importable from the project's own source directory.
+def packaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, test: str) -> Path:
+    """A project whose SQL ships in a package, importable from the project's source like an editable install."""
     root = tmp_path / "packaged"
     (root / "src" / "shop").mkdir(parents=True)
     (root / "src" / "shop" / "__init__.py").write_text("")
     (root / "src" / "shop" / "paid.sql").write_text(PAID)
-    (root / "test_packaged.py").write_text(textwrap.dedent(TEST_PACKAGED))
+    (root / "src" / "shop" / "queries.py").write_text(QUERIES_MODULE)
+    (root / "test_packaged.py").write_text(textwrap.dedent(PACKAGED_SETUP) + textwrap.dedent(test))
     monkeypatch.setenv("PYTHONPATH", str(root / "src"))
-    results = run(mutants_of(root / "src" / "shop" / "paid.sql", "aggregate"), root, timeout=60, **MODES[mode])
-    assert [r.status for r in results] == [CAUGHT]
+    return root
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("test", [TEST_READS_WHEN_CALLED, TEST_READS_AT_IMPORT], ids=["when called", "at import"])
+def test_a_package_imported_from_the_project_is_imported_from_the_copy(tmp_path, monkeypatch, mode, test):
+    root = packaged(tmp_path, monkeypatch, test)
+    paid = root / "src" / "shop" / "paid.sql"
+    results = run(mutants_of(paid, "aggregate", "comparison"), root, timeout=60, **MODES[mode])
+    statuses = {f"{r.before} -> {r.after}": r.status for r in results}
+    assert statuses["SELECT customer, SUM(amount) AS total -> SELECT customer, MAX(amount) AS total"] == CAUGHT
+    assert statuses["WHERE status = 'paid' AND amount > 0 -> WHERE status = 'paid' AND amount >= 0"] == SURVIVED
+
+
+def test_a_hanging_test_times_out_and_its_process_ends(tmp_path, monkeypatch):
+    log = tmp_path / "hanging.log"
+    root = packaged(tmp_path, monkeypatch, TEST_HANGS.replace("{log!r}", repr(str(log))))
+    paid = root / "src" / "shop" / "paid.sql"
+    results = run(mutants_of(paid, "aggregate"), root, timeout=5, **MODES["pytest workers"])
+    assert [r.status for r in results] == [TIMEOUT]
+    pid = int(log.read_text().split()[0])
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    pytest.fail(f"the hanging test process {pid} is still running")
 
 
 def test_a_failing_baseline_stops_the_run(project):

@@ -9,6 +9,7 @@ Requests:
 - {"args": [...], "record": true, "watch": [paths]} does the same and also answers which watched
   files each test read: {"exit": code, "reads": {nodeid: [paths]}}. Reads outside any test, for
   example while test modules are imported, are listed under the empty node id.
+- {"args": [...], "fork": true} runs pytest in a fork that imports the project's modules again.
 """
 
 import builtins
@@ -47,6 +48,34 @@ class _ReadRecorder:
             self.reads.setdefault(self.current, set()).add(path)
 
 
+def _loaded_from(module: Any, root: str) -> bool:
+    paths = [getattr(module, "__file__", None), *(getattr(module, "__path__", None) or [])]
+    return any(isinstance(path, str) and os.path.realpath(path).startswith(root + os.sep) for path in paths)
+
+
+def _run_forked(args: list[str]) -> int:
+    """Run pytest in a fork without the modules loaded from the project, so files they read at import are read again.
+
+    Third-party modules stay loaded, which saves starting Python and importing them for every run.
+    """
+    # The virtual environment inside the copy is a link, so its real path lies outside the copy.
+    root = os.path.realpath(os.curdir)
+    pid = os.fork()
+    if pid == 0:
+        # Exit code 4 counts as an error, not as a caught mutant.
+        code = 4
+        try:
+            for name, module in list(sys.modules.items()):
+                if _loaded_from(module, root):
+                    del sys.modules[name]
+            code = int(pytest.main(args))
+        finally:
+            os._exit(code)
+    code = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+    # A negative code means the fork was killed by a signal.
+    return code if code >= 0 else 4
+
+
 def main() -> None:
     responses = os.fdopen(os.dup(1), "w", buffering=1)
     devnull = os.open(os.devnull, os.O_WRONLY)
@@ -76,6 +105,8 @@ def main() -> None:
                 active.clear()
             reads = {nodeid: sorted(paths) for nodeid, paths in recorder.reads.items()}
             response: dict[str, Any] = {"exit": int(code), "reads": reads}
+        elif request.get("fork"):
+            response = {"exit": _run_forked(request["args"])}
         else:
             response = {"exit": int(pytest.main(request["args"]))}
         responses.write(json.dumps(response) + "\n")
