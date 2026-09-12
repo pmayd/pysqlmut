@@ -142,6 +142,9 @@ def _generate_part(
                 if skipped and {source.line_of(patch.start), source.line_of(patch.end)} & skipped:
                     generation.rejected[candidate.operator, "skipped by comment"] += 1
                     continue
+                if candidate.equivalent:
+                    generation.rejected[candidate.operator, f"equivalent: {candidate.equivalent}"] += 1
+                    continue
                 _verify(generation, statement, original, index, candidate)
     return generation.mutants, generation.rejected
 

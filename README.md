@@ -11,6 +11,8 @@ change that no test noticed.
 - A mutant changes only the characters of one expression; the rest of the file, comments and
   formatting included, stays as it is.
 - Statements sqlglot cannot parse (for example scripting blocks) are skipped, not guessed.
+- Changes that provably cannot alter a result are left out, for example UNION ALL -> UNION where every
+  branch returns unique rows and each branch has a different literal in some column.
 
 ## Status
 

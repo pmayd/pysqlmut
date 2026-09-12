@@ -105,6 +105,35 @@ SELECT a FROM t WHERE b = 4;
     assert sorted({m.line for m in mutants}) == [2, 6]
 
 
+LABEL_BLOCKS = """SELECT 'are' AS code_field, 'are_text' AS text_field, are AS code, COUNT(*) AS n FROM inv GROUP BY ALL
+UNION ALL
+(SELECT 'are' AS code_field, 'short_name_are' AS text_field, are AS code, COUNT(*) AS n FROM inv GROUP BY ALL)
+UNION ALL
+SELECT DISTINCT 'company', 'company_text', company, 1 FROM inv;
+"""
+
+
+def test_union_all_stays_where_every_row_is_already_unique():
+    generation = generate(SqlSource(Path("q.sql"), LABEL_BLOCKS, "snowflake"), ["union"])
+    assert generation.mutants == []
+    assert generation.rejected["union", "equivalent: rows are already unique"] == 2
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        # The first two branches can return the same row.
+        ("'short_name_are' AS text_field", "'are_text' AS text_field"),
+        # The last branch can return the same row twice.
+        ("SELECT DISTINCT 'company'", "SELECT 'company'"),
+        # A string and a number may compare equal after conversion.
+        ("'short_name_are' AS text_field, are AS code, COUNT(*) AS n", "1 AS text_field, are AS code, 7 AS n"),
+    ],
+)
+def test_union_all_changes_where_rows_may_repeat(old, new):
+    assert mutated(replaced(LABEL_BLOCKS, old, new), "union")
+
+
 def test_a_process_pool_generates_the_same_mutants_in_the_same_order():
     source = SqlSource(Path("q.sql"), QUERY + UNIONS + LABELS, "snowflake")
     serial = generate(source)

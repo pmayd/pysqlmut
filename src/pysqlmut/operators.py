@@ -7,6 +7,8 @@ to exactly that changed tree, so an operator may propose a patch it is unsure ab
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from itertools import combinations
 
 import sqlglot
 from sqlglot import exp
@@ -31,6 +33,8 @@ class Candidate:
     patch: Patch
     # Applied to a copy of the node; returns the node that takes its place.
     mutate: Callable[[exp.Expr], exp.Expr]
+    # Why the change cannot alter any result, when the operator can prove it; such a candidate is dropped.
+    equivalent: str | None = None
 
 
 Operator = Callable[[SqlSource, exp.Expr, int], Iterator[Candidate]]
@@ -258,24 +262,93 @@ def order(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]
         yield Candidate("order", "ascending -> DESC", Patch(span.end, span.end, " DESC"), reverse(True))
 
 
+def _union_branches(node: exp.Expr) -> list[exp.Expr]:
+    """The queries a chain of UNIONs combines, looking through parentheses and nested UNIONs."""
+    while isinstance(node, exp.Subquery):
+        node = node.this
+    if isinstance(node, exp.Union):
+        return [*_union_branches(node.this), *_union_branches(node.expression)]
+    return [node]
+
+
+def _returns_unique_rows(select: exp.Select) -> bool:
+    """Whether a query cannot return the same row twice: SELECT DISTINCT, or a GROUP BY on columns it returns."""
+    distinct = select.args.get("distinct")
+    if isinstance(distinct, exp.Distinct):
+        return not distinct.args.get("on")
+    group = select.args.get("group")
+    if group is None or any(group.args.get(key) for key in ("rollup", "cube", "grouping_sets")):
+        return False
+    if group.args.get("all"):
+        return True
+    # Names are not matched against aliases: GROUP BY f may group by a source column f that the query changes.
+    returned = {(e.this if isinstance(e, exp.Alias) else e).sql() for e in select.expressions}
+    for key in group.expressions:
+        if isinstance(key, exp.Literal) and not key.is_string and key.this.isdigit():
+            if not 1 <= int(key.this) <= len(select.expressions):
+                return False
+        elif key.sql() not in returned:
+            return False
+    return True
+
+
+def _literal_columns(select: exp.Select) -> dict[int, tuple[str, object]]:
+    """The value of each output column that is a string or number literal, by position."""
+    values: dict[int, tuple[str, object]] = {}
+    for position, projection in enumerate(select.expressions):
+        value = projection.this if isinstance(projection, exp.Alias) else projection
+        if not isinstance(value, exp.Literal):
+            continue
+        if value.is_string:
+            # A collation may compare strings without case or trailing spaces.
+            values[position] = ("string", value.this.casefold().rstrip())
+        else:
+            try:
+                values[position] = ("number", Decimal(value.this))
+            except InvalidOperation:
+                continue
+    return values
+
+
+def _rows_already_unique(node: exp.Union) -> bool:
+    """Whether UNION and UNION ALL return the same rows here.
+
+    They do when every branch returns unique rows and no two branches can return the same row, because a
+    column holds a different literal in each. Columns are matched by position, so a branch with * cannot be judged.
+    """
+    branches = _union_branches(node)
+    selects = [b for b in branches if isinstance(b, exp.Select) and not b.is_star and _returns_unique_rows(b)]
+    if len(selects) != len(branches) or len({len(s.expressions) for s in selects}) != 1:
+        return False
+    literals = [_literal_columns(s) for s in selects]
+    return all(
+        any(
+            # A string and a number may compare equal after conversion, so only literals of one kind count.
+            position in second and first[position][0] == second[position][0] and first[position] != second[position]
+            for position in first
+        )
+        for first, second in combinations(literals, 2)
+    )
+
+
 def union(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
-    """Swap UNION and UNION ALL."""
+    """Swap UNION and UNION ALL, unless the rows are already unique so both return the same."""
     if not isinstance(node, exp.Union):
         return
     index = _token_between(source, node.this, node.expression, offset, {TokenType.UNION})
     if index is None or index + 1 >= len(source.tokens):
         return
+    equivalent = "rows are already unique" if _rows_already_unique(node) else None
     union_token, following = source.tokens[index], source.tokens[index + 1]
     if following.token_type == TokenType.ALL:
         patch = Patch(union_token.end + 1, following.end + 1, "")
-        yield Candidate("union", "UNION ALL -> UNION", patch, _set("distinct", True))
+        yield Candidate("union", "UNION ALL -> UNION", patch, _set("distinct", True), equivalent)
     elif following.token_type == TokenType.DISTINCT:
-        yield Candidate(
-            "union", "UNION DISTINCT -> UNION ALL", _replace_token(source, index + 1, "ALL"), _set("distinct", False)
-        )
+        patch = _replace_token(source, index + 1, "ALL")
+        yield Candidate("union", "UNION DISTINCT -> UNION ALL", patch, _set("distinct", False), equivalent)
     else:
         patch = Patch(union_token.end + 1, union_token.end + 1, " ALL")
-        yield Candidate("union", "UNION -> UNION ALL", patch, _set("distinct", False))
+        yield Candidate("union", "UNION -> UNION ALL", patch, _set("distinct", False), equivalent)
 
 
 _JOIN_MODIFIERS = {TokenType.LEFT, TokenType.INNER, TokenType.OUTER}
