@@ -19,7 +19,7 @@ Prototype.
 ## Usage
 
 ```bash
-pysqlmut list scripts/sql/refresh.sql --dialect snowflake --show   # generate and show the mutants
+pysqlmut generate scripts/sql/refresh.sql --dialect snowflake --show   # generate and show the mutants
 pysqlmut run --report pysqlmut-report.json                          # run tests against every mutant
 pysqlmut report pysqlmut-report.json                                # survivors grouped by the code they changed
 pysqlmut accept pysqlmut-report.json                                # accept reviewed survivors

@@ -55,7 +55,7 @@ def _generations(args: argparse.Namespace, config: Config) -> Iterator[Generatio
         yield generate(SqlSource.read(path, config.dialect), config.operators_for(path.relative_to(project)))
 
 
-def _list(args: argparse.Namespace) -> int:
+def _generate(args: argparse.Namespace) -> int:
     config = _config(args)
     produced: Counter[str] = Counter()
     rejected: Counter[tuple[str, str]] = Counter()
@@ -192,10 +192,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pysqlmut", description="Mutation testing for SQL.")
     commands = parser.add_subparsers(dest="command_name", required=True)
 
-    list_parser = commands.add_parser("list", help="generate and verify the mutants of SQL files")
-    _add_selection(list_parser)
-    list_parser.add_argument("--show", action="store_true", help="print every mutant with its line before and after")
-    list_parser.set_defaults(handler=_list)
+    generate_parser = commands.add_parser(
+        "generate", help="generate and verify the mutants of SQL files without running tests"
+    )
+    _add_selection(generate_parser)
+    generate_parser.add_argument(
+        "--show", action="store_true", help="print every mutant with its line before and after"
+    )
+    generate_parser.set_defaults(handler=_generate)
 
     run_parser = commands.add_parser("run", help="run the tests against every mutant")
     _add_selection(run_parser)
