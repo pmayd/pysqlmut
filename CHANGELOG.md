@@ -7,6 +7,11 @@ settings or the report format.
 
 ## [Unreleased]
 
+### Changed
+
+- The help and the README name the value of `--pytest` `COMMAND` instead of `PYTHON`: it is the command that
+  starts the project's Python, such as `uv run python`, not a Python version.
+
 ## [0.1.0] - 2026-09-13
 
 First release.

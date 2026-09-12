@@ -87,7 +87,7 @@ tool, but each mutant pays for starting Python, importing your dependencies and 
 Use it to try pysqlmut, for test tools other than pytest, and for tests that read the SQL in another process,
 such as dbt, a database command line tool or pytest-xdist workers.
 
-**`--pytest PYTHON` runs pytest inside your project's Python.** Give it the command that starts the Python of
+**`--pytest COMMAND` runs pytest inside your project's Python.** Give it the command that starts the Python of
 your project's environment, the one with pytest and your project's dependencies installed: `uv run python`,
 `poetry run python`, or a path such as `.venv/bin/python`. pysqlmut needs it because it is installed apart from
 your project, so its own Python cannot import your code or your test dependencies.

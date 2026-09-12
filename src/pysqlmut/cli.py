@@ -184,7 +184,7 @@ def run_command(
     pytest: Annotated[
         str | None,
         typer.Option(
-            metavar="PYTHON",
+            metavar="COMMAND",
             help="Command that starts your project's Python, where pytest and your dependencies are installed, e.g. "
             "'uv run python' or '.venv/bin/python'. Keeps pytest running and runs only the tests that read the "
             "mutated file.",
