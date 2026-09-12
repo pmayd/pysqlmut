@@ -1,0 +1,14 @@
+[project]
+name = "getting-started"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["duckdb", "pytest"]
+
+[tool.pysqlmut]
+dialect = "duckdb"
+files = ["sql/*.sql"]
+
+[tool.pysqlmut.pytest]
+python = "uv run python"
+tests = ["tests"]
+args = ["-q"]

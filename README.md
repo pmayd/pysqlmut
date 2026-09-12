@@ -13,18 +13,21 @@ down.
 It is made for SQL that is tested by running it, for example on DuckDB inside pytest. Tests that compare
 SQL text cannot catch these changes.
 
+**New here?** [GETTING_STARTED.md](GETTING_STARTED.md) walks through a small example from the first run to
+closing the gaps it finds. [ROADMAP.md](ROADMAP.md) lists what is missing and what may come next.
+
 ## Status
 
-Early development. The command line and the configuration may still change before 1.0.
+Early development. The command line, the settings and the report format may still change before 1.0.
 
 ## Installation
 
 ```bash
-uv tool install git+https://github.com/pmayd/pysqlmut
+uv tool install pysqlmut      # or: pipx install pysqlmut
 ```
 
-pysqlmut needs Python 3.12 or newer and runs on Linux and macOS. With the pytest runner, the tested
-project's own environment needs pytest 8.1 or newer.
+- pysqlmut needs Python 3.12 or newer and runs on Linux, macOS and Windows through WSL.
+- With `--pytest`, the tested project's own environment needs pytest 8.1 or newer, on Python 3.9 or newer.
 
 ## Quick start
 
@@ -52,26 +55,50 @@ A group of survivors looks like this:
          + WHERE o.status <> 'paid'
 ```
 
-The same rule written three times (here with different names and values) is one group, so repeated gaps
-show up once.
+The same rule written in several places, with different names and values, is one group, so a repeated gap
+shows up once.
 
 ## How it works
 
-**Generating mutants.** sqlglot parses each statement. Each operator looks at one expression and proposes
-a text patch together with the change it means for the parse tree. A mutant is kept only when the patched
-statement parses to exactly that changed tree, so a mutant never changes more than it claims, and the rest
-of the file stays as it is, comments and formatting included. Statements sqlglot cannot parse are skipped.
+**Generating mutants.** sqlglot parses each statement. Each operator looks at one expression and proposes a
+text patch together with the change it means for the parse tree. A mutant is kept only when the patched
+statement parses to exactly that changed tree, so a mutant never changes more than it claims, and the rest of
+the file stays as it is, comments, formatting and line endings included. Statements sqlglot cannot parse are
+skipped. For the same SQL and settings, the mutants and their order are always the same.
 
 **Running tests.** Every worker gets its own copy of the project, which shares the project's virtual
 environment; your working tree is never changed. There are two runners:
 
 - `--command "..."` runs any shell command in a new process for every mutant.
-- `--pytest PYTHON` keeps one pytest process per copy. A first run records which test opens which SQL
-  file, and each mutant then runs only those tests. When a file is read while modules are imported, the
-  worker forks for every mutant so that the file is read again.
+- `--pytest PYTHON` keeps one pytest process per copy. A first run records which test reads which SQL file,
+  directly or through a fixture, and each mutant then runs only those tests, in a fork of that process that
+  imports the project's modules again. Files read while modules are imported make every test run.
 
-**Results.** Each mutant is *caught* (a test failed), *survived*, *not covered* (no test reads the file),
-*timeout*, *error* or *accepted*. `run` exits with 1 while survivors remain that nobody accepted.
+Ctrl-C or a timeout ends the test processes a run started. A run stops before testing any mutant when the
+tests fail on the unchanged project, or when they read the project itself instead of the copy that holds the
+mutant, since no result would mean anything then.
+
+## Results
+
+| Status | Meaning |
+|---|---|
+| caught | a test failed |
+| survived | every test passed although the SQL changed |
+| not covered | no test was seen reading the file, so nothing ran |
+| accepted | a reviewed survivor, not run again |
+| timeout | the tests did not finish in time |
+| error | the tests could not run, for example pytest collected no tests |
+
+*Survivors* are the mutants that survived or were not covered.
+
+| Exit code | When |
+|---|---|
+| 0 | every mutant was caught or accepted |
+| 1 | mutants survived, were not covered, timed out or ended in an error |
+| 2 | a usage or settings error |
+| 3 | the tests fail on the unchanged project, or read the project instead of its copy |
+| 4 | pysqlmut itself failed; please report it |
+| 130 | the run was interrupted |
 
 ## Operators
 
@@ -93,21 +120,22 @@ environment; your working tree is never changed. There are two runners:
 | `string-literal` | a string gets a suffix |
 | `column` | a column becomes the most similarly named other column of the same table |
 
-A change that provably cannot alter any result is left out: `UNION ALL` and `UNION` return the same rows
-when every branch returns unique rows and each pair of branches differs in a literal column.
+A change that provably cannot alter any result is left out: `UNION ALL` and `UNION` return the same rows when
+every branch returns unique rows and each pair of branches differs in a literal column.
 
 ## Configuration
 
-Settings live in the tested project's `pyproject.toml`; command line options override them.
+Settings live in the tested project's `pyproject.toml`; command line options override them. Paths in the
+settings are relative to the project, and patterns are globs, where `*` does not cross a directory.
 
 ```toml
 [tool.pysqlmut]
 dialect = "duckdb"
-files = ["sql/*.sql"]
+files = ["sql/**/*.sql"]
 exclude-operators = ["union"]
 accepted = "pysqlmut-accepted.json"
 workers = 8     # processes that generate mutants, then parallel test runs
-timeout = 180
+timeout = 180   # seconds per mutant
 
 # Long-lived pytest workers that run only the tests reading the mutated file.
 [tool.pysqlmut.pytest]
@@ -121,27 +149,31 @@ exclude-operators = ["string-literal"]
 ```
 
 Instead of `[tool.pysqlmut.pytest]`, `command = "..."` runs any test command, in a new process per mutant.
-With the settings in place, `pysqlmut run` needs no arguments.
+With the settings in place, `pysqlmut run` needs no arguments. Unknown settings and values of the wrong type
+are reported before anything runs.
 
 ## Reviewing survivors
 
 - `-- pysqlmut: skip` at the end of a line excludes that line; `-- pysqlmut: off` and `-- pysqlmut: on`
-  exclude a block.
-- `pysqlmut accept pysqlmut-report.json` records the survivors of a report as reviewed. Later runs neither
-  run nor report them. A survivor is identified by its file, operator and the line before and after the
-  change, so edits elsewhere in the file keep it accepted. `--operators` accepts only some operators.
+  exclude a block, including changes that would reach into it.
+- `pysqlmut accept pysqlmut-report.json` records the survivors of a report as reviewed, and later runs neither
+  run nor report them. A survivor is identified by its file, operator, description and the line before and
+  after the change, so edits elsewhere in the file keep it accepted. `--operators` accepts only some
+  operators. Commit the accepted file with the project.
 - `pysqlmut generate` (also available as `pysqlmut list`) shows every mutant and why candidates were
   rejected.
 
 ## Limitations
 
-- Some survivors cannot change a result for any data your SQL can see, for example `MAX` to `MIN` on a
-  value that is the same in every row of its group. pysqlmut only removes such changes when it can prove it
-  from the SQL alone; accept the rest after review.
-- `string-literal` and `case` produce many survivors on label and mapping SQL. Exclude them per file when
-  their survivors are not useful.
-- Scripting blocks, procedures and other statements sqlglot cannot parse are not mutated.
-- Windows is not supported.
+- With `--pytest`, a file read by a subprocess, a pytest-xdist worker or native code counts as not covered.
+  Use `--command` for such projects.
+- Some survivors cannot change a result for any data your SQL can see, for example `MAX` to `MIN` on a value
+  that is the same in every row of its group. pysqlmut only removes such changes when it can prove it from the
+  SQL alone; accept the rest after review.
+- `string-literal` and `case` produce many survivors on label and mapping SQL. Exclude them per file when their
+  survivors are not useful.
+- Jinja templates, scripting blocks, procedures and other statements sqlglot cannot parse are not mutated.
+- Windows is supported only through WSL.
 
 ## Development
 
@@ -151,7 +183,7 @@ just check   # lint, type check, test
 ```
 
 `AGENTS.md` describes the design rules and what makes a test worth keeping. `RELEASING.md` describes how
-versions are published. Changes are listed in `CHANGELOG.md`.
+versions are published, `SECURITY.md` how to report a vulnerability, and `CHANGELOG.md` lists the changes.
 
 ## License
 
