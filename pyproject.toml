@@ -36,6 +36,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "C4", "PT", "PL", "PTH", 
 ignore = [
     "PLR2004", # magic values read fine in tests and token handling
     "PLR0911", # operators return early per node shape
+    "PLR0913", # run() takes its options as keyword arguments
 ]
 
 [tool.pytest.ini_options]
