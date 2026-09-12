@@ -40,7 +40,7 @@ dialect = "snowflake"
 files = ["sql/*.sql"]
 exclude-operators = ["union"]
 accepted = "pysqlmut-accepted.json"
-workers = 8
+workers = 8   # processes that generate mutants, then parallel test runs
 timeout = 180
 
 # Long-lived pytest workers that run only the tests reading the mutated file.

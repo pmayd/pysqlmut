@@ -1,8 +1,10 @@
 """Generate the mutants of a SQL file and keep only those that change exactly what they claim."""
 
+import math
 import re
 from collections import Counter
 from collections.abc import Iterable
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +13,9 @@ from sqlglot.errors import SqlglotError
 
 from pysqlmut.operators import ALL_OPERATORS, Candidate, Operator, Patch
 from pysqlmut.source import SqlSource, Statement
+
+# With an executor, a file is cut into about this many parts of similar cost.
+PARTS_PER_FILE = 64
 
 
 @dataclass(frozen=True)
@@ -60,28 +65,88 @@ def skipped_lines(text: str) -> set[int]:
     return skipped
 
 
-def generate(source: SqlSource, operators: Iterable[str] | None = None) -> Generation:
+@dataclass(frozen=True)
+class _Part:
+    """The nodes start to stop, in walk order, of one statement."""
+
+    statement: int
+    start: int
+    stop: int
+
+
+def generate(source: SqlSource, operators: Iterable[str] | None = None, executor: Executor | None = None) -> Generation:
     """Run the operators over every statement and verify each candidate by parsing the patched statement.
 
-    operators=None runs every operator; an empty list runs none.
+    operators=None runs every operator; an empty list runs none. With a process pool as executor, parts of
+    the file are verified in parallel; the result is the same as without.
     """
-    chosen: list[Operator] = [ALL_OPERATORS[name] for name in (ALL_OPERATORS if operators is None else operators)]
+    names = tuple(ALL_OPERATORS if operators is None else operators)
+    parts = _parts(source, 1 if executor is None else PARTS_PER_FILE)
+    if executor is None:
+        results = [_generate_part(source, names, part) for part in parts]
+    else:
+        count = len(parts)
+        results = executor.map(
+            _generate_part_in_worker,
+            [source.path] * count,
+            [source.text] * count,
+            [source.dialect] * count,
+            [names] * count,
+            parts,
+        )
     generation = Generation(source)
-    skipped = skipped_lines(source.text)
-    for statement in source.statements:
-        nodes = list(statement.tree.walk())
-        for index, node in enumerate(nodes):
-            for operator in chosen:
-                for candidate in operator(source, node, statement.span.start):
-                    patch = candidate.patch
-                    if skipped and {source.line_of(patch.start), source.line_of(patch.end)} & skipped:
-                        generation.rejected[candidate.operator, "skipped by comment"] += 1
-                        continue
-                    _verify(generation, statement, index, candidate)
+    for mutants, rejected in results:
+        generation.mutants.extend(mutants)
+        generation.rejected.update(rejected)
     return generation
 
 
-def _verify(generation: Generation, statement: Statement, index: int, candidate: Candidate) -> None:
+def _parts(source: SqlSource, target: int) -> list[_Part]:
+    """Cut the statements into about target parts; a candidate costs about as much as its statement is large."""
+    sizes = [sum(1 for _ in statement.tree.walk()) for statement in source.statements]
+    total = sum(size * size for size in sizes) or 1
+    parts = []
+    for index, size in enumerate(sizes):
+        pieces = min(size, math.ceil(target * size * size / total))
+        step = math.ceil(size / pieces)
+        parts.extend(_Part(index, start, min(start + step, size)) for start in range(0, size, step))
+    return parts
+
+
+# Each worker process parses a file once and keeps it for the following parts.
+_worker_sources: dict[tuple[Path, str], SqlSource] = {}
+
+
+def _generate_part_in_worker(
+    path: Path, text: str, dialect: str, names: tuple[str, ...], part: _Part
+) -> tuple[list[Mutant], Counter[tuple[str, str]]]:
+    source = _worker_sources.get((path, dialect))
+    if source is None or source.text != text:
+        source = _worker_sources[path, dialect] = SqlSource(path, text, dialect)
+    return _generate_part(source, names, part)
+
+
+def _generate_part(
+    source: SqlSource, names: tuple[str, ...], part: _Part
+) -> tuple[list[Mutant], Counter[tuple[str, str]]]:
+    chosen: list[Operator] = [ALL_OPERATORS[name] for name in names]
+    generation = Generation(source)
+    skipped = skipped_lines(source.text)
+    statement = source.statements[part.statement]
+    original = statement.tree.sql(dialect=source.dialect)
+    nodes = list(statement.tree.walk())
+    for index in range(part.start, part.stop):
+        for operator in chosen:
+            for candidate in operator(source, nodes[index], statement.span.start):
+                patch = candidate.patch
+                if skipped and {source.line_of(patch.start), source.line_of(patch.end)} & skipped:
+                    generation.rejected[candidate.operator, "skipped by comment"] += 1
+                    continue
+                _verify(generation, statement, original, index, candidate)
+    return generation.mutants, generation.rejected
+
+
+def _verify(generation: Generation, statement: Statement, original: str, index: int, candidate: Candidate) -> None:
     source = generation.source
     patch = candidate.patch
     if not statement.span.start <= patch.start <= patch.end <= statement.span.end:
@@ -95,20 +160,21 @@ def _verify(generation: Generation, statement: Statement, index: int, candidate:
             expected_tree = replacement
         else:
             target.replace(replacement)
-    expected = expected_tree.sql(dialect=source.dialect)
+    # Both trees belong to this check alone, so the generator may change them instead of copying them first.
+    expected = expected_tree.sql(dialect=source.dialect, copy=False)
 
     relative_start, relative_end = patch.start - statement.span.start, patch.end - statement.span.start
-    original = source.text[statement.span.start : statement.span.end]
-    mutated = original[:relative_start] + patch.replacement + original[relative_end:]
+    text = source.text[statement.span.start : statement.span.end]
+    mutated = text[:relative_start] + patch.replacement + text[relative_end:]
     try:
         trees = [tree for tree in sqlglot.parse(mutated, read=source.dialect) if tree]
     except SqlglotError:
         generation.rejected[candidate.operator, "does not parse"] += 1
         return
-    if len(trees) != 1 or trees[0].sql(dialect=source.dialect) != expected:
+    if len(trees) != 1 or trees[0].sql(dialect=source.dialect, copy=False) != expected:
         generation.rejected[candidate.operator, "differs from the intended change"] += 1
         return
-    if expected == statement.tree.sql(dialect=source.dialect):
+    if expected == original:
         generation.rejected[candidate.operator, "changes nothing"] += 1
         return
     generation.mutants.append(

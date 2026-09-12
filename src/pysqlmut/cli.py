@@ -3,6 +3,8 @@
 import shlex
 from collections import Counter
 from collections.abc import Iterator
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
@@ -64,20 +66,21 @@ def _config(project: Path, dialect: str | None, operators: str | None) -> Config
     return config
 
 
-def _generations(files: list[Path] | None, project: Path, config: Config) -> Iterator[Generation]:
+def _generations(files: list[Path] | None, project: Path, config: Config, workers: int) -> Iterator[Generation]:
     if config.dialect is None:
         raise _fail("no dialect: pass --dialect or set dialect in [tool.pysqlmut]")
     project = project.resolve()
     paths = [path.resolve() for path in files or config.files_in(project)]
     if not paths:
         raise _fail("no SQL files: pass them or set files in [tool.pysqlmut]")
-    for path in paths:
-        try:
-            source = SqlSource.read(path, config.dialect)
-        except SqlglotError as error:
-            typer.echo(f"{path}: skipped, cannot tokenize: {error}", err=True)
-            continue
-        yield generate(source, config.operators_for(path.relative_to(project)))
+    with ProcessPoolExecutor(workers) if workers > 1 else nullcontext() as executor:
+        for path in paths:
+            try:
+                source = SqlSource.read(path, config.dialect)
+            except SqlglotError as error:
+                typer.echo(f"{path}: skipped, cannot tokenize: {error}", err=True)
+                continue
+            yield generate(source, config.operators_for(path.relative_to(project)), executor)
 
 
 def generate_command(
@@ -86,6 +89,7 @@ def generate_command(
     operators: Operators = None,
     project: Project = Path(),
     show: Annotated[bool, typer.Option(help="Print every mutant with its line before and after.")] = False,
+    workers: Annotated[int | None, typer.Option(help="Processes that verify mutants in parallel.")] = None,
 ) -> None:
     """Generate and verify the mutants of SQL files without running tests.
 
@@ -94,7 +98,7 @@ def generate_command(
     config = _config(project, dialect, operators)
     produced: Counter[str] = Counter()
     rejected: Counter[tuple[str, str]] = Counter()
-    for generation in _generations(files, project, config):
+    for generation in _generations(files, project, config, workers or config.workers):
         produced.update(m.operator for m in generation.mutants)
         rejected.update(generation.rejected)
         source = generation.source
@@ -177,11 +181,12 @@ def run_command(
     if (command is None) == (pytest_python is None):
         raise _fail("give --command or --pytest, or set command or [tool.pysqlmut.pytest] python")
     project = project.resolve()
-    mutants = [mutant for generation in _generations(files, project, config) for mutant in generation.mutants]
+    workers = workers or config.workers
+    # The generation processes end before the test workers start.
+    mutants = [mutant for generation in _generations(files, project, config, workers) for mutant in generation.mutants]
     known = accepted.load(project / (accepted_file or config.accepted or _DEFAULT_ACCEPTED))
     skipped = _accepted_results(mutants, known, project)
     to_run = [mutant for position, mutant in enumerate(mutants) if position not in skipped]
-    workers = workers or config.workers
     how = command or f"pytest workers ({pytest_python})"
     typer.echo(f"{len(to_run)} mutants to run ({len(skipped)} accepted), {workers} workers: {how}")
 

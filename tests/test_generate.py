@@ -1,5 +1,6 @@
 """Each operator changes exactly one expression and leaves the rest of the file, comments included, untouched."""
 
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,16 @@ SELECT a FROM t WHERE b = 4;
 """
     mutants = generate(SqlSource(Path("q.sql"), sql, "snowflake"), ["comparison"]).mutants
     assert sorted({m.line for m in mutants}) == [2, 6]
+
+
+def test_a_process_pool_generates_the_same_mutants_in_the_same_order():
+    source = SqlSource(Path("q.sql"), QUERY + UNIONS + LABELS, "snowflake")
+    serial = generate(source)
+    with ProcessPoolExecutor(2) as executor:
+        parallel = generate(source, executor=executor)
+    assert len(serial.mutants) > 20
+    assert parallel.mutants == serial.mutants
+    assert parallel.rejected == serial.rejected
 
 
 def test_an_empty_operator_list_runs_no_operator():
