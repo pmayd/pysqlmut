@@ -9,6 +9,8 @@ def result(operator: str, description: str, before: str, after: str = "", line: 
 
 
 def test_lines_that_differ_only_in_names_and_literals_share_a_shape():
+    assert shape("d_gender_text.text_field = 'gender_text'") == "x.x = 'S'"
+    assert shape("WHEN age <= 44 THEN 6") == "WHEN x <= N THEN N"
     assert shape("d_gender_text.text_field = 'gender_text'") == shape("d_org_text.text_field = 'org_class_text'")
     assert shape("WHEN age <= 44 THEN 6") == shape("WHEN age <= 59 THEN 9")
     assert shape("WHEN age <= 44 THEN 6") != shape("WHEN age < 44 THEN 6")

@@ -22,7 +22,8 @@ def shape(line: str) -> str:
     """The line with names, strings and numbers masked; upper-case SQL keywords stay readable."""
     masked = _STRING.sub("'S'", line)
     masked = _NUMBER.sub("N", masked)
-    masked = _WORD.sub(lambda m: m.group(0) if m.group(0).isupper() and m.group(0) not in {"S", "N"} else "x", masked)
+    # Upper-case words are keywords, and S and N are the string and number placeholders set above.
+    masked = _WORD.sub(lambda m: m.group(0) if m.group(0).isupper() else "x", masked)
     return " ".join(masked.split())
 
 

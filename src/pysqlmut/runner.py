@@ -60,8 +60,10 @@ class Selection:
 
 
 def _env() -> dict[str, str]:
-    # uv must not re-sync the shared virtual environment into a copy.
-    return os.environ | {"UV_NO_SYNC": "1"}
+    # uv must not re-sync the shared virtual environment into a copy, and pysqlmut's own virtual
+    # environment must not leak into the tested project's commands.
+    env = {key: value for key, value in os.environ.items() if key != "VIRTUAL_ENV"}
+    return env | {"UV_NO_SYNC": "1"}
 
 
 class Worker(Protocol):
