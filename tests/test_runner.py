@@ -104,6 +104,34 @@ def test_a_file_no_test_reads_is_not_covered_and_not_run(project):
     assert {r.status for r in results} == {NOT_COVERED}
 
 
+TEST_PACKAGED = """
+from importlib.resources import files
+
+import duckdb
+
+
+def test_packaged_totals():
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
+    con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('a', 3, 'paid'), ('b', 2, 'paid')")
+    sql = files("shop").joinpath("paid.sql").read_text()
+    assert con.execute(sql).fetchall() == [("a", 8), ("b", 2)]
+"""
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_package_imported_from_the_project_is_imported_from_the_copy(tmp_path, monkeypatch, mode):
+    # Like an editable install: the package is importable from the project's own source directory.
+    root = tmp_path / "packaged"
+    (root / "src" / "shop").mkdir(parents=True)
+    (root / "src" / "shop" / "__init__.py").write_text("")
+    (root / "src" / "shop" / "paid.sql").write_text(PAID)
+    (root / "test_packaged.py").write_text(textwrap.dedent(TEST_PACKAGED))
+    monkeypatch.setenv("PYTHONPATH", str(root / "src"))
+    results = run(mutants_of(root / "src" / "shop" / "paid.sql", "aggregate"), root, timeout=60, **MODES[mode])
+    assert [r.status for r in results] == [CAUGHT]
+
+
 def test_a_failing_baseline_stops_the_run(project):
     (project / "test_paid.py").write_text("def test_broken():\n    assert False\n")
     with pytest.raises(BaselineFailedError):

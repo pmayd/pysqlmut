@@ -61,10 +61,26 @@ class Selection:
     fresh: bool = False
 
 
-def _env() -> dict[str, str]:
-    # uv must not re-sync the shared virtual environment into a copy, and pysqlmut's own virtual
-    # environment must not leak into the tested project's commands.
+def _env(project: Path, copy: Path) -> dict[str, str]:
+    """The environment of the tests in a copy.
+
+    uv must not re-sync the shared virtual environment into a copy, and pysqlmut's own virtual environment
+    must not leak into the tested project's commands. Import paths that point into the project, from
+    PYTHONPATH or from an editable install, are pointed at the copy first; otherwise the tests would import
+    the unchanged files of the project.
+    """
     env = {key: value for key, value in os.environ.items() if key != "VIRTUAL_ENV"}
+    current = [entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry]
+    entries = list(current)
+    for pth in (project / ".venv").glob("lib/python*/site-packages/*.pth"):
+        entries += [line for line in pth.read_text(encoding="utf-8").splitlines() if not line.startswith("import")]
+    moved = []
+    for entry in entries:
+        path = Path(entry.strip()).resolve()
+        if entry.strip() and path.is_relative_to(project):
+            moved.append(str(copy / path.relative_to(project)))
+    if moved:
+        env["PYTHONPATH"] = os.pathsep.join([*moved, *current])
     return env | {"UV_NO_SYNC": "1"}
 
 
@@ -77,8 +93,8 @@ class Worker(Protocol):
 class CommandWorker:
     """Runs a shell command in a new process for every mutant."""
 
-    def __init__(self, copy: Path, command: str, timeout: float) -> None:
-        self.copy, self.command, self.timeout = copy, command, timeout
+    def __init__(self, copy: Path, env: dict[str, str], command: str, timeout: float) -> None:
+        self.copy, self.env, self.command, self.timeout = copy, env, command, timeout
 
     def _run(self) -> int | None:
         try:
@@ -86,7 +102,7 @@ class CommandWorker:
                 self.command,
                 shell=True,
                 cwd=self.copy,
-                env=_env(),
+                env=self.env,
                 capture_output=True,
                 timeout=self.timeout,
                 check=False,
@@ -111,15 +127,17 @@ class CommandWorker:
 class PytestWorker:
     """Keeps one pytest process alive and runs the selected tests for each mutant."""
 
-    def __init__(self, copy: Path, python: str, tests: Sequence[str], args: Sequence[str], timeout: float) -> None:
-        self.copy, self.tests, self.args, self.timeout = copy, list(tests), list(args), timeout
+    def __init__(
+        self, copy: Path, env: dict[str, str], *, python: str, tests: Sequence[str], args: Sequence[str], timeout: float
+    ) -> None:
+        self.copy, self.env, self.tests, self.args, self.timeout = copy, env, list(tests), list(args), timeout
         self.command = [*shlex.split(python), str(_WORKER_SCRIPT)]
         self.process: subprocess.Popen[str] | None = None
 
     def _start(self) -> subprocess.Popen[str]:
         if self.process is None:
             self.process = subprocess.Popen(
-                self.command, cwd=self.copy, env=_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+                self.command, cwd=self.copy, env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
             )
         return self.process
 
@@ -221,10 +239,11 @@ def run(
     with _copies(project, max(1, workers)) as copies, ExitStack() as stack:
         pool_workers: list[Worker] = []
         for copy in copies:
+            env = _env(project, copy)
             worker: Worker = (
-                CommandWorker(copy, command, timeout)
+                CommandWorker(copy, env, command, timeout)
                 if command is not None
-                else PytestWorker(copy, pytest_python or "", tests, pytest_args, timeout)
+                else PytestWorker(copy, env, python=pytest_python or "", tests=tests, args=pytest_args, timeout=timeout)
             )
             stack.callback(worker.close)
             pool_workers.append(worker)
