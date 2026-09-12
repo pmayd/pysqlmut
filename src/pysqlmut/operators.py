@@ -224,7 +224,9 @@ def coalesce(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candida
 def _default_nulls_first(dialect: str, desc: bool) -> bool:
     """Where the dialect puts NULLs for a direction when the query does not say."""
     direction = "DESC" if desc else "ASC"
-    ordered = sqlglot.parse_one(f"SELECT a FROM t ORDER BY a {direction}", read=dialect).find(exp.Ordered)
+    # A fixed query, parsed only to learn the dialect's default; it never runs.
+    query = f"SELECT a FROM t ORDER BY a {direction}"  # noqa: S608
+    ordered = sqlglot.parse_one(query, read=dialect).find(exp.Ordered)
     return bool(ordered and ordered.args.get("nulls_first"))
 
 

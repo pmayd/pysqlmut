@@ -1,51 +1,83 @@
 """Run pytest sessions on request inside one long-lived process.
 
-pysqlmut starts this file with the tested project's own Python, so it may import only the standard
-library and pytest. Each request is one JSON line on stdin and gets one JSON line back on the
-original stdout; pytest's own output goes to /dev/null.
+pysqlmut starts a copy of this file with the tested project's own Python, so it may import only the standard
+library and pytest, and it must run on older Python versions than pysqlmut itself (3.9 and newer). Each request
+is one JSON line on stdin and gets one JSON line back on the original stdout; pytest's own output goes to
+/dev/null.
 
 Requests:
-- {"args": [...]} runs pytest with these arguments and answers {"exit": code}.
-- {"args": [...], "record": true, "watch": [paths]} does the same and also answers which watched
-  files each test read: {"exit": code, "reads": {nodeid: [paths]}}. Reads outside any test, for
-  example while test modules are imported, are listed under the empty node id.
-- {"args": [...], "fork": true} runs pytest in a fork that imports the project's modules again.
+- {"args": [...], "record": true, "watch": [paths]} runs pytest in this process and answers which watched files
+  each test read: {"exit": code, "reads": {test id: [paths]}}. A read while a fixture is set up counts for every
+  test that uses the fixture; a read outside any test, for example while modules are imported, is listed under
+  the empty test id. Test ids are relative to the working directory, so they can be passed back as arguments.
+- {"args": [...]} runs pytest in a fork and answers {"exit": code}.
+
+Every run after the recording happens in a fork that no longer holds the project's modules. Files read at
+import, cached by a function or kept by a fixture are therefore read again, while third-party modules stay
+loaded, which saves starting Python and importing them for every run.
 """
+
+from __future__ import annotations
 
 import builtins
 import io
 import json
 import os
 import sys
-from collections.abc import Generator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+
+def _test_id(item: pytest.Item) -> str:
+    """The item's test id with its file relative to the working directory instead of pytest's rootdir."""
+    _, _, rest = item.nodeid.partition("::")
+    local = os.path.relpath(str(item.path))
+    return f"{local}::{rest}" if rest else local
+
 
 class _ReadRecorder:
-    """Pytest plugin that notes which watched files each test opens."""
+    """Pytest plugin that notes which watched files each test reads, directly or through its fixtures."""
 
     def __init__(self, watched: set[str]) -> None:
         self.watched = watched
         self.current = ""
+        self.fixtures: list[str] = []
         self.reads: dict[str, set[str]] = {}
+        self.fixture_reads: dict[str, set[str]] = {}
 
     @pytest.hookimpl(wrapper=True)
-    def pytest_runtest_protocol(self, item: pytest.Item, nextitem: pytest.Item | None) -> Generator[None, Any, Any]:
-        self.current = item.nodeid
+    def pytest_runtest_protocol(self, item: pytest.Item) -> Generator[None, Any, Any]:
+        self.current = _test_id(item)
         try:
             return (yield)
         finally:
+            # A fixture set up for an earlier test is reused without reading its files again.
+            for name in getattr(item, "fixturenames", ()):
+                self.reads.setdefault(self.current, set()).update(self.fixture_reads.get(name, ()))
             self.current = ""
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_fixture_setup(self, fixturedef: Any) -> Generator[None, Any, Any]:
+        self.fixtures.append(fixturedef.argname)
+        try:
+            return (yield)
+        finally:
+            self.fixtures.pop()
 
     def saw(self, file: Any) -> None:
         try:
             path = os.path.realpath(os.fspath(file))
         except TypeError:
             return
-        if path in self.watched:
-            self.reads.setdefault(self.current, set()).add(path)
+        if path not in self.watched:
+            return
+        self.reads.setdefault(self.current, set()).add(path)
+        for name in self.fixtures:
+            self.fixture_reads.setdefault(name, set()).add(path)
 
 
 def _loaded_from(module: Any, root: str) -> bool:
@@ -54,10 +86,7 @@ def _loaded_from(module: Any, root: str) -> bool:
 
 
 def _run_forked(args: list[str]) -> int:
-    """Run pytest in a fork without the modules loaded from the project, so files they read at import are read again.
-
-    Third-party modules stay loaded, which saves starting Python and importing them for every run.
-    """
+    """Run pytest in a fork without the modules loaded from the project."""
     # The virtual environment inside the copy is a link, so its real path lies outside the copy.
     root = os.path.realpath(os.curdir)
     pid = os.fork()
@@ -103,12 +132,10 @@ def main() -> None:
                 code = pytest.main(request["args"], plugins=[recorder])
             finally:
                 active.clear()
-            reads = {nodeid: sorted(paths) for nodeid, paths in recorder.reads.items()}
+            reads = {test: sorted(paths) for test, paths in recorder.reads.items() if paths}
             response: dict[str, Any] = {"exit": int(code), "reads": reads}
-        elif request.get("fork"):
-            response = {"exit": _run_forked(request["args"])}
         else:
-            response = {"exit": int(pytest.main(request["args"]))}
+            response = {"exit": _run_forked(request["args"])}
         responses.write(json.dumps(response) + "\n")
 
 

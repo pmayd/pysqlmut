@@ -1,14 +1,14 @@
-"""Summaries of run results: survivors grouped by the shape of the code they changed.
+"""Run results as a JSON file, and survivors grouped by the shape of the code they changed.
 
-The same rule often repeats across many columns (a lookup join per text column, a fallback per
-label). Grouping mutants whose changed lines only differ in names and literals shows each repeated
-gap once, with a count, instead of once per column.
+The same rule often repeats across a file: the same filter on many tables, the same fallback on many columns.
+Grouping mutants whose changed lines only differ in names and literals shows each repeated gap once, with a
+count, instead of once per place.
 """
 
 import json
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from pysqlmut.runner import Result
@@ -16,6 +16,7 @@ from pysqlmut.runner import Result
 _STRING = re.compile(r"'(?:[^']|'')*'")
 _NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
 _WORD = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+_VERSION = 1
 
 
 def shape(line: str) -> str:
@@ -50,11 +51,20 @@ def group(results: Iterable[Result]) -> list[Group]:
     return [Group(operator, description, line, tuple(members)) for (operator, description, line, _), members in ordered]
 
 
+def save(results: Sequence[Result], path: Path) -> None:
+    data = {"version": _VERSION, "results": [asdict(r) for r in results]}
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
 def load(path: Path) -> list[Result]:
-    return [Result(**item) for item in json.loads(path.read_text(encoding="utf-8"))]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("version") != _VERSION:
+        raise ValueError(f"{path} is not a pysqlmut report of version {_VERSION}")
+    names = {field.name for field in fields(Result)}
+    return [Result(**{key: value for key, value in item.items() if key in names}) for item in data["results"]]
 
 
-def render(groups: Sequence[Group], limit: int | None = None) -> str:
+def render(groups: Sequence[Group], limit: int) -> str:
     lines = []
     for item in groups[:limit]:
         example = item.results[0]

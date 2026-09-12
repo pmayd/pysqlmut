@@ -38,7 +38,7 @@ Issues = "https://github.com/pmayd/pysqlmut/issues"
 Changelog = "https://github.com/pmayd/pysqlmut/blob/main/CHANGELOG.md"
 
 [project.scripts]
-pysqlmut = "pysqlmut:main"
+pysqlmut = "pysqlmut.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.12,<0.13.0"]
@@ -58,7 +58,7 @@ line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "C4", "PT", "PL", "PTH", "RET"]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "C4", "PT", "PL", "PTH", "RET", "S", "BLE"]
 ignore = [
     "PLR2004", # magic values read fine in tests and token handling
     "PLR0911", # operators return early per node shape
@@ -67,6 +67,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/pysqlmut/cli.py" = ["PLR0917"] # Typer turns each parameter of a command into an option
+"tests/*" = ["S101"]                # pytest asserts
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

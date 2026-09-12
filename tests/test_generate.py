@@ -4,8 +4,10 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
+from sqlglot import exp
 
 from pysqlmut.mutants import generate
+from pysqlmut.operators import ALL_OPERATORS, Candidate, Patch
 from pysqlmut.source import SqlSource
 
 QUERY = """-- Totals per customer; this comment must survive every mutant.
@@ -194,3 +196,82 @@ SELECT a FROM s.t WHERE b = 2;
     source = SqlSource(Path("q.sql"), sql, "snowflake")
     mutants = generate(source, ["comparison"]).mutants
     assert [m.line for m in mutants] == [7]
+
+
+BRANCHES = """SELECT a FROM t JOIN u ON t.id = u.id ORDER BY a ASC, b;
+SELECT a FROM t UNION SELECT a FROM u;
+"""
+
+
+@pytest.mark.parametrize(
+    ("operator", "old", "new"),
+    [
+        ("join-type", "JOIN u", "LEFT JOIN u"),
+        ("order", "a ASC", "a DESC"),
+        ("order", ", b;", ", b DESC;"),
+        ("union", "UNION SELECT", "UNION ALL SELECT"),
+    ],
+)
+def test_join_order_and_union_change_in_the_other_direction_too(operator, old, new):
+    assert replaced(BRANCHES, old, new) in mutated(BRANCHES, operator)
+
+
+def test_a_candidate_is_kept_only_when_its_patch_makes_exactly_the_change_it_claims(monkeypatch):
+    sql = "SELECT a FROM t WHERE b = 1;\n"
+    equals = sql.index("=")
+
+    def to_not_equal(node: exp.Expr) -> exp.Expr:
+        return exp.NEQ(this=node.this.copy(), expression=node.expression.copy())
+
+    def unchanged(node: exp.Expr) -> exp.Expr:
+        return node
+
+    candidates = [
+        Candidate("claims", "honest", Patch(equals, equals + 1, "<>"), to_not_equal),
+        Candidate("claims", "patch without the claimed tree change", Patch(equals, equals + 1, "<>"), unchanged),
+        Candidate("claims", "patch past the statement", Patch(len(sql), len(sql), " "), to_not_equal),
+        Candidate("claims", "patch that breaks the syntax", Patch(equals, equals + 1, "= ="), unchanged),
+        Candidate("claims", "patch that changes nothing", Patch(equals, equals + 1, "="), unchanged),
+    ]
+
+    def claims(source, node, offset):
+        if isinstance(node, exp.EQ):
+            yield from candidates
+
+    monkeypatch.setitem(ALL_OPERATORS, "claims", claims)
+    generation = generate(SqlSource(Path("q.sql"), sql, "duckdb"), ["claims"])
+    assert [m.description for m in generation.mutants] == ["honest"]
+    assert dict(generation.rejected) == {
+        ("claims", "differs from the intended change"): 1,
+        ("claims", "outside statement"): 1,
+        ("claims", "does not parse"): 1,
+        ("claims", "changes nothing"): 1,
+    }
+
+
+def test_skip_comments_count_lines_the_way_line_numbers_do():
+    sql = (
+        "SELECT a FROM t WHERE b = 1; -- page\x0cbreak\n"
+        "SELECT a FROM t WHERE b = 2; -- pysqlmut: skip\n"
+        "SELECT a FROM t WHERE b = 3;\n"
+    )
+    mutants = generate(SqlSource(Path("q.sql"), sql, "snowflake"), ["comparison"]).mutants
+    assert sorted({m.line for m in mutants}) == [1, 3]
+
+
+SPANNING = """SELECT a FROM t
+WHERE b = 1
+{off}
+-- nothing in here may change
+{on}
+AND c = 2;
+"""
+
+
+def test_a_change_across_an_excluded_block_is_skipped():
+    def drop_conditions(off: str, on: str) -> list:
+        sql = SPANNING.format(off=off, on=on)
+        return generate(SqlSource(Path("q.sql"), sql, "snowflake"), ["drop-condition"]).mutants
+
+    assert len(drop_conditions("--", "--")) == 2
+    assert drop_conditions("-- pysqlmut: off", "-- pysqlmut: on") == []

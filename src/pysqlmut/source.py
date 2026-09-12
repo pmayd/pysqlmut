@@ -19,6 +19,12 @@ logging.getLogger("sqlglot").setLevel(logging.ERROR)
 MAX_EXTENSION = 4
 
 
+def read_text(path: Path) -> str:
+    """A file's text with its line endings as they are, so that a patched file keeps them."""
+    with path.open(encoding="utf-8", newline="") as file:
+        return file.read()
+
+
 @dataclass(frozen=True)
 class Span:
     """A range of the source text; end is exclusive."""
@@ -49,7 +55,7 @@ class SqlSource:
 
     @classmethod
     def read(cls, path: Path, dialect: str) -> "SqlSource":
-        return cls(path, path.read_text(encoding="utf-8"), dialect)
+        return cls(path, read_text(path), dialect)
 
     def _statements(self) -> list[Statement]:
         """Parse the file one statement at a time, keeping the text range of each."""

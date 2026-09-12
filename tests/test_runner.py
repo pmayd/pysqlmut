@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from pysqlmut.mutants import generate
-from pysqlmut.runner import CAUGHT, NOT_COVERED, SURVIVED, TIMEOUT, BaselineFailedError, run
+from pysqlmut.runner import CAUGHT, NOT_COVERED, SURVIVED, TIMEOUT, BaselineFailedError, ProjectReadError, _env, run
 from pysqlmut.source import SqlSource
 
 PAID = """-- Paid orders per customer.
@@ -151,13 +151,13 @@ def test_hangs_on_wrong_totals():
 """
 
 
-def packaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, test: str) -> Path:
+def packaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, test: str, queries: str = QUERIES_MODULE) -> Path:
     """A project whose SQL ships in a package, importable from the project's source like an editable install."""
     root = tmp_path / "packaged"
     (root / "src" / "shop").mkdir(parents=True)
     (root / "src" / "shop" / "__init__.py").write_text("")
     (root / "src" / "shop" / "paid.sql").write_text(PAID)
-    (root / "src" / "shop" / "queries.py").write_text(QUERIES_MODULE)
+    (root / "src" / "shop" / "queries.py").write_text(textwrap.dedent(queries))
     (root / "test_packaged.py").write_text(textwrap.dedent(PACKAGED_SETUP) + textwrap.dedent(test))
     monkeypatch.setenv("PYTHONPATH", str(root / "src"))
     return root
@@ -195,3 +195,229 @@ def test_a_failing_baseline_stops_the_run(project):
     (project / "test_paid.py").write_text("def test_broken():\n    assert False\n")
     with pytest.raises(BaselineFailedError):
         run(mutants_of(project / "paid.sql", "comparison"), project, timeout=60, **MODES["pytest workers"])
+
+
+def _assert_ended(pid: int) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    pytest.fail(f"process {pid} is still running")
+
+
+CONFTEST_SESSION = """
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(scope="session")
+def paid_sql():
+    return (Path(__file__).parent / "paid.sql").read_text()
+"""
+
+TEST_SESSION = """
+import duckdb
+
+
+def test_query_is_not_empty(paid_sql):
+    assert paid_sql.strip()
+
+
+def test_paid_totals(paid_sql):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
+    con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('a', 3, 'paid'), ('b', 2, 'paid')")
+    assert con.execute(paid_sql).fetchall() == [("a", 8), ("b", 2)]
+"""
+
+
+def test_a_file_read_by_a_session_fixture_runs_every_test_that_uses_the_fixture(tmp_path):
+    root = tmp_path / "session"
+    root.mkdir()
+    (root / "paid.sql").write_text(PAID)
+    (root / "conftest.py").write_text(textwrap.dedent(CONFTEST_SESSION))
+    (root / "test_paid.py").write_text(textwrap.dedent(TEST_SESSION))
+    results = run(mutants_of(root / "paid.sql", "aggregate"), root, timeout=60, **MODES["pytest workers"])
+    assert [(r.status, r.tests) for r in results] == [(CAUGHT, 2)]
+
+
+QUERIES_CACHED = """
+from functools import cache
+from importlib.resources import files
+
+
+@cache
+def paid_sql():
+    return files("shop").joinpath("paid.sql").read_text()
+"""
+
+TEST_READS_CACHED = """
+from shop.queries import paid_sql
+
+
+def test_cached_totals():
+    assert paid_totals(paid_sql()) == [("a", 8), ("b", 2)]
+"""
+
+
+def test_a_file_a_function_caches_is_read_again_for_every_mutant(tmp_path, monkeypatch):
+    root = packaged(tmp_path, monkeypatch, TEST_READS_CACHED, queries=QUERIES_CACHED)
+    paid = root / "src" / "shop" / "paid.sql"
+    results = run(mutants_of(paid, "aggregate"), root, timeout=60, **MODES["pytest workers"])
+    assert [r.status for r in results] == [CAUGHT]
+
+
+TEST_BELOW_PROJECT = """
+from pathlib import Path
+
+import duckdb
+
+
+def test_paid_totals():
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
+    con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('a', 3, 'paid'), ('b', 2, 'paid')")
+    sql = (Path(__file__).parent.parent / "paid.sql").read_text()
+    assert con.execute(sql).fetchall() == [("a", 8), ("b", 2)]
+"""
+
+
+def test_tests_below_their_own_pytest_ini_are_selected_from_the_project_root(tmp_path):
+    root = tmp_path / "nested"
+    (root / "tests").mkdir(parents=True)
+    (root / "paid.sql").write_text(PAID)
+    # pytest takes tests/ as its rootdir and names the tests relative to it.
+    (root / "tests" / "pytest.ini").write_text("[pytest]\n")
+    (root / "tests" / "test_paid.py").write_text(textwrap.dedent(TEST_BELOW_PROJECT))
+    options: dict[str, Any] = {**MODES["pytest workers"], "tests": ["tests"]}
+    results = run(mutants_of(root / "paid.sql", "aggregate"), root, timeout=60, **options)
+    assert [(r.status, r.tests) for r in results] == [(CAUGHT, 1)]
+
+
+TEST_IMPORTS_CONFIG = """
+from pathlib import Path
+
+import duckdb
+from config import EXPECTED
+
+
+def test_paid_totals():
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
+    con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('a', 3, 'paid'), ('b', 2, 'paid')")
+    assert con.execute((Path(__file__).parent / "paid.sql").read_text()).fetchall() == EXPECTED
+"""
+
+
+def test_a_project_module_named_like_a_pysqlmut_module_is_imported_from_the_project(tmp_path, monkeypatch):
+    root = tmp_path / "shadow"
+    (root / "lib").mkdir(parents=True)
+    (root / "lib" / "config.py").write_text('EXPECTED = [("a", 8), ("b", 2)]\n')
+    (root / "paid.sql").write_text(PAID)
+    (root / "test_paid.py").write_text(textwrap.dedent(TEST_IMPORTS_CONFIG))
+    monkeypatch.setenv("PYTHONPATH", str(root / "lib"))
+    results = run(mutants_of(root / "paid.sql", "aggregate"), root, timeout=60, **MODES["pytest workers"])
+    assert [r.status for r in results] == [CAUGHT]
+
+
+def test_a_mutant_in_a_directory_the_copies_leave_out_is_refused(project):
+    # The copies link to the project's .venv, so a mutant written there would change the real file.
+    (project / ".venv").mkdir()
+    (project / ".venv" / "cached.sql").write_text(UNREAD)
+    with pytest.raises(ValueError, match="leave out"):
+        run(mutants_of(project / ".venv" / "cached.sql", "comparison"), project, timeout=60, **MODES["command"])
+
+
+def test_a_command_that_times_out_ends_together_with_the_processes_it_started(project, tmp_path):
+    pid_file = tmp_path / "sleep.pid"
+    tests = f"{sys.executable} -m pytest -q -p no:cacheprovider"
+    command = f"if grep -q '<>' paid.sql; then sleep 120 & echo $! > {pid_file}; wait; else {tests}; fi"
+    results = run(mutants_of(project / "paid.sql", "comparison"), project, command=command, timeout=10)
+    statuses = {r.after: r.status for r in results}
+    assert statuses["WHERE status <> 'paid' AND amount > 0"] == TIMEOUT
+    _assert_ended(int(pid_file.read_text()))
+
+
+TEST_HANGS_ON_BOUNDARY = """
+import os
+import time
+from pathlib import Path
+
+import duckdb
+
+
+def test_paid_totals():
+    sql = (Path(__file__).parent / "paid.sql").read_text()
+    if ">= 0" in sql:
+        Path(PID_FILE).write_text(str(os.getpid()))
+        time.sleep(120)
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
+    con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('a', 3, 'paid'), ('b', 2, 'paid')")
+    assert con.execute(sql).fetchall() == [("a", 8), ("b", 2)]
+"""
+
+
+def test_an_interrupted_run_stops_its_tests_at_once(tmp_path):
+    root = tmp_path / "interrupted"
+    root.mkdir()
+    pid_file = tmp_path / "hanging.pid"
+    (root / "paid.sql").write_text(PAID)
+    (root / "test_paid.py").write_text(f"PID_FILE = {str(pid_file)!r}\n" + textwrap.dedent(TEST_HANGS_ON_BOUNDARY))
+
+    def interrupt(result):
+        raise KeyboardInterrupt
+
+    mutants = mutants_of(root / "paid.sql", "comparison")
+    started = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        run(mutants, root, workers=2, timeout=300, progress=interrupt, **MODES["pytest workers"])
+    assert time.monotonic() - started < 60
+    if pid_file.exists():
+        _assert_ended(int(pid_file.read_text()))
+
+
+TEST_READS_THE_PROJECT = """
+import duckdb
+
+
+def test_paid_totals():
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
+    con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('a', 3, 'paid'), ('b', 2, 'paid')")
+    with open(PROJECT_FILE) as file:
+        assert con.execute(file.read()).fetchall() == [("a", 8), ("b", 2)]
+"""
+
+
+def test_tests_that_read_the_project_instead_of_the_copy_stop_the_run(tmp_path):
+    root = tmp_path / "absolute"
+    root.mkdir()
+    (root / "paid.sql").write_text(PAID)
+    header = f"PROJECT_FILE = {str(root / 'paid.sql')!r}\n"
+    (root / "test_paid.py").write_text(header + textwrap.dedent(TEST_READS_THE_PROJECT))
+    with pytest.raises(ProjectReadError, match=r"paid\.sql"):
+        run(mutants_of(root / "paid.sql", "aggregate"), root, timeout=60, **MODES["pytest workers"])
+
+
+def test_a_file_with_windows_line_endings_keeps_them_in_every_mutant(tmp_path):
+    root = tmp_path / "crlf"
+    root.mkdir()
+    (root / "paid.sql").write_bytes(PAID.replace("\n", "\r\n").encode())
+    (root / "check.py").write_text('import sys\nsys.exit(0 if b"\\r\\n" in open("paid.sql", "rb").read() else 1)\n')
+    results = run(mutants_of(root / "paid.sql", "comparison"), root, command=f"{sys.executable} check.py", timeout=60)
+    assert results
+    assert {r.status for r in results} == {SURVIVED}
+
+
+def test_an_editable_install_of_the_project_is_imported_from_the_copy(tmp_path):
+    project = (tmp_path / "project").resolve()
+    site_packages = project / ".venv" / "lib" / "python3.12" / "site-packages"
+    site_packages.mkdir(parents=True)
+    (site_packages / "_shop.pth").write_text(f"{project / 'src'}\n")
+    copy = tmp_path / "copy"
+    assert _env(project, copy)["PYTHONPATH"].split(os.pathsep)[0] == str(copy / "src")

@@ -2,10 +2,8 @@
 
 Two ways to run tests:
 - A shell command: every mutant starts a new process and runs whatever the command runs.
-- Pytest workers: one long-lived pytest process per copy. A recording baseline run notes which
-  test reads which mutated file, and each mutant then runs only the tests that read its file.
-  When a file is read while modules are imported, the worker forks and the fork imports the
-  project's modules again.
+- Pytest workers: one long-lived pytest process per copy. A recording baseline run notes which test reads which
+  mutated file, and each mutant then runs only the tests that read its file, in a fork of the worker.
 """
 
 import json
@@ -18,23 +16,30 @@ import signal
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from pysqlmut import accepted as accepted_survivors
+from pysqlmut.config import IGNORED_DIRECTORIES
 from pysqlmut.mutants import Mutant
+from pysqlmut.source import read_text
 
 # Not copied: the copies share the project's virtual environment, and the rest is cache.
-_NOT_COPIED = shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "node_modules")
+_NOT_COPIED = shutil.ignore_patterns(*IGNORED_DIRECTORIES)
 _WORKER_SCRIPT = Path(__file__).with_name("pytest_worker.py")
+# Starting the tests for the first time includes starting Python and collecting every test.
+_BASELINE_TIMEOUT = 600.0
 
 CAUGHT, SURVIVED, TIMEOUT, ERROR, NOT_COVERED = "caught", "survived", "timeout", "error", "not covered"
 # A survivor the team accepted earlier; it is not run again.
 ACCEPTED = "accepted"
-# Pytest exit codes: 1 tests failed, 2 interrupted, 3 internal error, 4 usage error, 5 no tests collected.
+# Pytest exit codes: 1 tests failed, 2 interrupted, 3 internal error, 4 usage error, 5 no tests collected. An
+# interruption or internal error is how a mutant that breaks a test module or fixture shows up, so it counts as
+# caught; a usage error or no tests means the run did not test the mutant at all.
 _CAUGHT_EXIT_CODES = {1, 2, 3}
 
 
@@ -48,20 +53,31 @@ class Result:
     seconds: float
     before: str
     after: str
-    # How many tests the mutant ran: None means all of them (and reports written before selection existed).
+    # How many tests the mutant ran; None means every test the command or the test paths collect.
     tests: int | None = None
 
 
-class BaselineFailedError(RuntimeError):
-    """The tests fail on the unchanged project, so no mutant result would mean anything."""
+class SetupError(RuntimeError):
+    """The tests cannot tell mutants apart in this setup, so no result would mean anything."""
+
+
+class BaselineFailedError(SetupError):
+    """The tests fail on the unchanged project."""
+
+
+class ProjectReadError(SetupError):
+    """The tests read the project itself instead of the copy that holds the mutant."""
+
+
+class WorkerStoppedError(RuntimeError):
+    """The run was interrupted and the worker takes no more mutants."""
 
 
 @dataclass(frozen=True)
 class Selection:
-    """Which tests a mutant of a file runs, and whether it needs a fresh process."""
+    """The tests a mutant of a file runs; None means all of them."""
 
     tests: tuple[str, ...] | None
-    fresh: bool = False
 
 
 def _env(project: Path, copy: Path) -> dict[str, str]:
@@ -87,10 +103,21 @@ def _env(project: Path, copy: Path) -> dict[str, str]:
     return env | {"UV_NO_SYNC": "1"}
 
 
+def _kill(process: subprocess.Popen[Any]) -> None:
+    """End a process started in a session of its own, together with everything it started."""
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    process.wait()
+
+
+def _tail(output: bytes, lines: int = 20) -> str:
+    return "\n".join(output.decode(errors="replace").splitlines()[-lines:])
+
+
 class Worker(Protocol):
     def baseline(self, watched: Sequence[Path]) -> dict[str, list[str]] | None: ...
     def run(self, selection: Selection) -> str: ...
-    def close(self) -> None: ...
+    def stop(self) -> None: ...
 
 
 class CommandWorker:
@@ -98,49 +125,80 @@ class CommandWorker:
 
     def __init__(self, copy: Path, env: dict[str, str], command: str, timeout: float) -> None:
         self.copy, self.env, self.command, self.timeout = copy, env, command, timeout
+        self.process: subprocess.Popen[bytes] | None = None
+        self.stopped = False
 
-    def _run(self) -> int | None:
+    def _run(self, timeout: float) -> tuple[int | None, bytes]:
+        if self.stopped:
+            raise WorkerStoppedError
+        # A session of its own, so that a timeout also ends the processes the command started.
+        process = subprocess.Popen(  # noqa: S602 - the user's own test command, run as a shell command on purpose
+            self.command,
+            shell=True,
+            cwd=self.copy,
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        self.process = process
         try:
-            completed = subprocess.run(
-                self.command,
-                shell=True,
-                cwd=self.copy,
-                env=self.env,
-                capture_output=True,
-                timeout=self.timeout,
-                check=False,
-            )
+            output, _ = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            return None
-        return completed.returncode
+            _kill(process)
+            return None, b""
+        finally:
+            self.process = None
+        return process.returncode, output
 
     def baseline(self, watched: Sequence[Path]) -> dict[str, list[str]] | None:
-        if self._run() != 0:
-            raise BaselineFailedError(f"the test command fails on the unchanged project: {self.command}")
+        timeout = max(self.timeout, _BASELINE_TIMEOUT)
+        code, output = self._run(timeout)
+        if code is None:
+            raise BaselineFailedError(f"the test command does not finish within {timeout:g} seconds: {self.command}")
+        if code != 0:
+            raise BaselineFailedError(
+                f"the test command fails on the unchanged project (exit code {code}): {self.command}\n{_tail(output)}"
+            )
         return None
 
     def run(self, selection: Selection) -> str:
-        code = self._run()
+        code, _ = self._run(self.timeout)
         return TIMEOUT if code is None else CAUGHT if code != 0 else SURVIVED
 
-    def close(self) -> None:
-        pass
+    def stop(self) -> None:
+        self.stopped = True
+        process = self.process
+        if process is not None:
+            _kill(process)
 
 
 class PytestWorker:
-    """Keeps one pytest process alive and runs the selected tests for each mutant."""
+    """Keeps one pytest process alive and runs the selected tests for each mutant in a fork of it."""
 
     def __init__(
-        self, copy: Path, env: dict[str, str], *, python: str, tests: Sequence[str], args: Sequence[str], timeout: float
+        self,
+        copy: Path,
+        env: dict[str, str],
+        *,
+        script: Path,
+        python: str,
+        tests: Sequence[str],
+        args: Sequence[str],
+        timeout: float,
     ) -> None:
         self.copy, self.env, self.tests, self.args, self.timeout = copy, env, list(tests), list(args), timeout
-        self.command = [*shlex.split(python), str(_WORKER_SCRIPT)]
+        self.python = python
+        self.command = [*shlex.split(python), str(script)]
         self.process: subprocess.Popen[str] | None = None
+        self.stopped = False
 
     def _start(self) -> subprocess.Popen[str]:
+        if self.stopped:
+            raise WorkerStoppedError
         if self.process is None:
-            # A process group of its own, so that closing the worker also ends the forks it started.
-            self.process = subprocess.Popen(
+            # A session of its own, so that stopping the worker also ends the forks it started.
+            self.process = subprocess.Popen(  # noqa: S603 - the project's own Python, as configured by the user
                 self.command,
                 cwd=self.copy,
                 env=self.env,
@@ -151,44 +209,56 @@ class PytestWorker:
             )
         return self.process
 
-    def _request(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def _request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any] | None:
         process = self._start()
-        assert process.stdin is not None
-        assert process.stdout is not None
-        process.stdin.write(json.dumps(payload) + "\n")
-        process.stdin.flush()
-        ready, _, _ = select.select([process.stdout], [], [], self.timeout)
+        if process.stdin is None or process.stdout is None:
+            raise RuntimeError("the pytest worker was started without pipes")
+        try:
+            process.stdin.write(json.dumps(payload) + "\n")
+            process.stdin.flush()
+        except BrokenPipeError:
+            self._close()
+            return None
+        ready, _, _ = select.select([process.stdout], [], [], timeout)
         line = process.stdout.readline() if ready else ""
         if not line:
-            self.close()
+            self._close()
             return None
         return json.loads(line)
 
     def baseline(self, watched: Sequence[Path]) -> dict[str, list[str]] | None:
-        request = {"args": [*self.tests, *self.args], "record": True, "watch": [str(p) for p in watched]}
-        response = self._request(request)
-        if response is None or response["exit"] != 0:
-            raise BaselineFailedError(f"pytest fails on the unchanged project: {' '.join(request['args'])}")
+        args = [*self.tests, *self.args]
+        request = {"args": args, "record": True, "watch": [str(p) for p in watched]}
+        response = self._request(request, max(self.timeout, _BASELINE_TIMEOUT))
+        rerun = f"{self.python} -m pytest {shlex.join(args)}"
+        if response is None:
+            raise BaselineFailedError(f"pytest does not finish on the unchanged project; try: {rerun}")
+        if response["exit"] != 0:
+            raise BaselineFailedError(
+                f"pytest fails on the unchanged project (exit code {response['exit']}); run it to see why: {rerun}"
+            )
         return response["reads"]
 
     def run(self, selection: Selection) -> str:
         tests = self.tests if selection.tests is None else list(selection.tests)
-        request: dict[str, Any] = {"args": [*tests, *self.args]}
-        if selection.fresh:
-            request["fork"] = True
-        response = self._request(request)
+        response = self._request({"args": [*tests, *self.args]}, self.timeout)
         if response is None:
+            if self.stopped:
+                raise WorkerStoppedError
             return TIMEOUT
         if response["exit"] == 0:
             return SURVIVED
         return CAUGHT if response["exit"] in _CAUGHT_EXIT_CODES else ERROR
 
-    def close(self) -> None:
-        if self.process is not None:
-            with suppress(ProcessLookupError):
-                os.killpg(self.process.pid, signal.SIGKILL)
-            self.process.wait()
-            self.process = None
+    def _close(self) -> None:
+        process = self.process
+        self.process = None
+        if process is not None:
+            _kill(process)
+
+    def stop(self) -> None:
+        self.stopped = True
+        self._close()
 
 
 @contextmanager
@@ -205,24 +275,49 @@ def _copies(project: Path, count: int) -> Iterator[list[Path]]:
         yield copies
 
 
-def _selections(reads: dict[str, list[str]] | None, copy: Path, files: Sequence[Path]) -> dict[Path, Selection | None]:
-    """Per file: the tests that read it, all tests in a fresh process, or None when no test reads it."""
+def _relative(path: Path, project: Path) -> Path:
+    """A mutated file's path relative to the project, refusing files a copy would not hold."""
+    resolved = path.resolve()
+    if not resolved.is_relative_to(project):
+        raise ValueError(f"{path} is outside the project {project}")
+    relative = resolved.relative_to(project)
+    if set(relative.parts) & set(IGNORED_DIRECTORIES):
+        raise ValueError(f"{path} is in a directory that project copies leave out ({', '.join(IGNORED_DIRECTORIES)})")
+    return relative
+
+
+def _selections(
+    reads: dict[str, list[str]] | None, copy: Path, project: Path, files: Sequence[Path]
+) -> dict[Path, Selection | None]:
+    """Per file: the tests that read it, all tests, or None when no test reads it."""
     if reads is None:
         return dict.fromkeys(files, Selection(None))
     readers: dict[Path, set[str]] = {}
-    for nodeid, paths in reads.items():
-        for path in paths:
-            readers.setdefault(Path(path).relative_to(copy), set()).add(nodeid)
+    outside: dict[Path, set[str]] = {}
+    for test, paths in reads.items():
+        for path in map(Path, paths):
+            if path.is_relative_to(copy):
+                readers.setdefault(path.relative_to(copy), set()).add(test)
+            elif path.is_relative_to(project):
+                outside.setdefault(path.relative_to(project), set()).add(test)
+    if outside:
+        found = "; ".join(
+            f"{file} by {', '.join(sorted(tests)) or 'module imports'}" for file, tests in outside.items()
+        )
+        raise ProjectReadError(
+            f"tests read the project itself instead of the copy that holds the mutant: {found}. Check for an "
+            "absolute path to the project, or a package installed from the project outside its .venv."
+        )
     selections: dict[Path, Selection | None] = {}
     for file in files:
-        nodeids = readers.get(file)
-        if not nodeids:
+        tests = readers.get(file)
+        if not tests:
             selections[file] = None
-        elif "" in nodeids:
-            # Read while modules were imported: a warm process would keep the unchanged text.
-            selections[file] = Selection(None, fresh=True)
+        elif "" in tests:
+            # Read while modules were imported, so any test may depend on the text.
+            selections[file] = Selection(None)
         else:
-            selections[file] = Selection(tuple(sorted(nodeids)))
+            selections[file] = Selection(tuple(sorted(tests)))
     return selections
 
 
@@ -236,31 +331,42 @@ def run(
     pytest_args: Sequence[str] = (),
     workers: int = 1,
     timeout: float = 300.0,
+    accepted: Collection[accepted_survivors.Fingerprint] = frozenset(),
     progress: Callable[[Result], None] | None = None,
 ) -> list[Result]:
-    """Run the tests against every mutant and classify each one."""
+    """Run the tests against every mutant and classify each one, in the order of the mutants."""
     if (command is None) == (pytest_python is None):
-        raise ValueError("give either a shell command or a pytest Python, not both")
+        raise ValueError("give exactly one of a shell command and a pytest Python")
     project = project.resolve()
     # A mutant's path may be absolute or relative to the working directory; inside a copy it must be
     # relative to the project, or the mutant would be written into the real project.
-    paths = {m.path: m.path.resolve().relative_to(project) for m in mutants}
-    originals = {m.path: (project / paths[m.path]).read_text(encoding="utf-8") for m in mutants}
+    paths = {m.path: _relative(m.path, project) for m in mutants}
+    originals = {m.path: read_text(project / paths[m.path]) for m in mutants}
     files = sorted(set(paths.values()))
 
     with _copies(project, max(1, workers)) as copies, ExitStack() as stack:
-        pool_workers: list[Worker] = []
-        for copy in copies:
-            env = _env(project, copy)
-            worker: Worker = (
-                CommandWorker(copy, env, command, timeout)
-                if command is not None
-                else PytestWorker(copy, env, python=pytest_python or "", tests=tests, args=pytest_args, timeout=timeout)
-            )
-            stack.callback(worker.close)
-            pool_workers.append(worker)
-        reads = pool_workers[0].baseline([copies[0] / file for file in files])
-        selections = _selections(reads, copies[0], files)
+        if command is not None:
+            pool_workers: list[Worker] = [CommandWorker(copy, _env(project, copy), command, timeout) for copy in copies]
+        else:
+            # Next to the copies rather than in pysqlmut's package, whose modules would shadow the project's.
+            script = copies[0].parent / "_pysqlmut_pytest_worker.py"
+            shutil.copyfile(_WORKER_SCRIPT, script)
+            pool_workers = [
+                PytestWorker(
+                    copy,
+                    _env(project, copy),
+                    script=script,
+                    python=pytest_python or "",
+                    tests=tests,
+                    args=pytest_args,
+                    timeout=timeout,
+                )
+                for copy in copies
+            ]
+        for worker in pool_workers:
+            stack.callback(worker.stop)
+        watched = [root / file for root in (copies[0], project) for file in files]
+        selections = _selections(pool_workers[0].baseline(watched), copies[0], project, files)
 
         free: queue.Queue[tuple[Worker, Path]] = queue.Queue()
         for worker, copy in zip(pool_workers, copies, strict=True):
@@ -271,19 +377,25 @@ def run(
             before, after = mutant.diff(original)
             selection = selections[relative]
             started = time.monotonic()
-            if selection is None:
+            count: int | None = 0
+            if accepted_survivors.fingerprint(
+                relative.as_posix(), mutant.operator, mutant.description, before, after
+            ) in (accepted):
+                status = ACCEPTED
+            elif selection is None:
                 status = NOT_COVERED
             else:
+                count = None if selection.tests is None else len(selection.tests)
                 worker, copy = free.get()
                 target = copy / relative
                 try:
-                    target.write_text(mutant.apply(original), encoding="utf-8")
+                    target.write_text(mutant.apply(original), encoding="utf-8", newline="")
                     status = worker.run(selection)
                 finally:
-                    target.write_text(original, encoding="utf-8")
+                    target.write_text(original, encoding="utf-8", newline="")
                     free.put((worker, copy))
             result = Result(
-                str(relative),
+                relative.as_posix(),
                 mutant.line,
                 mutant.operator,
                 mutant.description,
@@ -291,15 +403,24 @@ def run(
                 round(time.monotonic() - started, 2),
                 before.strip(),
                 after.strip(),
-                None if selection is None or selection.tests is None else len(selection.tests),
+                count,
             )
             if progress:
                 progress(result)
             return result
 
-        with ThreadPoolExecutor(max_workers=len(copies)) as pool:
-            return list(pool.map(one, mutants))
+        return _map_or_stop(one, mutants, pool_workers)
 
 
-def write_report(results: Sequence[Result], path: Path) -> None:
-    path.write_text(json.dumps([asdict(r) for r in results], indent=2), encoding="utf-8")
+def _map_or_stop(one: Callable[[Mutant], Result], mutants: Sequence[Mutant], workers: Sequence[Worker]) -> list[Result]:
+    """Run every mutant, one thread per worker; on an error or an interruption, stop the test processes first."""
+    pool = ThreadPoolExecutor(max_workers=len(workers))
+    try:
+        return list(pool.map(one, mutants))
+    except BaseException:
+        # Stopped first, so that no thread keeps waiting for a test that will not finish.
+        for worker in workers:
+            worker.stop()
+        raise
+    finally:
+        pool.shutdown(cancel_futures=True)

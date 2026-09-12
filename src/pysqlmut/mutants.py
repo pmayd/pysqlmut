@@ -53,7 +53,8 @@ def skipped_lines(text: str) -> set[int]:
     """Lines excluded by comments: `-- pysqlmut: skip` on the line, or between `-- pysqlmut: off` and `on`."""
     skipped: set[int] = set()
     off = False
-    for number, line in enumerate(text.splitlines(), 1):
+    # Split on newlines only, the way line numbers are counted; splitlines also splits on form feeds.
+    for number, line in enumerate(text.split("\n"), 1):
         match = _DIRECTIVE.search(line)
         directive = match.group(1).lower() if match else None
         if directive == "off":
@@ -139,7 +140,8 @@ def _generate_part(
         for operator in chosen:
             for candidate in operator(source, nodes[index], statement.span.start):
                 patch = candidate.patch
-                if skipped and {source.line_of(patch.start), source.line_of(patch.end)} & skipped:
+                lines = range(source.line_of(patch.start), source.line_of(patch.end) + 1)
+                if skipped and not skipped.isdisjoint(lines):
                     generation.rejected[candidate.operator, "skipped by comment"] += 1
                     continue
                 if candidate.equivalent:
