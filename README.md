@@ -156,7 +156,7 @@ every branch returns unique rows and each pair of branches differs in a literal 
 - **Default** is what pysqlmut uses when neither the option nor the setting is given. *Required* means that
   either the option or the setting must be given.
 - **Setting** names the key in `[tool.pysqlmut]` that can take the option's place (see
-  [Configuration](#configuration)); `pytest.python` means `python` in `[tool.pysqlmut.pytest]`. An option on the
+  [Configuration](#configuration)); `pytest.command` means `command` in `[tool.pysqlmut.pytest]`. An option on the
   command line wins over the setting. `—` means there is no setting.
 
 ### `pysqlmut generate [FILES]` (alias `pysqlmut list`)
@@ -180,7 +180,7 @@ Runs the tests against every mutant and prints the results grouped by the code t
 | Argument or option | Meaning | Default | Setting |
 |---|---|---|---|
 | `--command COMMAND` | shell command that runs your tests, started anew for every mutant; see [Choosing a runner](#choosing-a-runner) | required, unless `--pytest` is given | `command` |
-| `--pytest COMMAND` | command that starts your project's Python, for the pytest runner | required, unless `--command` is given | `pytest.python` |
+| `--pytest COMMAND` | command that starts your project's Python, for the pytest runner | required, unless `--command` is given | `pytest.command` |
 | `--tests PATH` | pytest path to collect; repeat the option for several paths | pytest's own settings | `pytest.tests` |
 | `--pytest-args "ARGS"` | extra pytest options in one string, such as `"-q -x"` | none | `pytest.args` |
 | `--workers N` | copies of the project that test mutants in parallel, and processes that generate them | 1 | `workers` |
@@ -231,7 +231,7 @@ timeout = 180   # seconds per mutant
 
 # Long-lived pytest workers that run only the tests reading the mutated file.
 [tool.pysqlmut.pytest]
-python = "uv run python"
+command = "uv run python"   # the command that starts your project's Python
 tests = ["tests/sql"]
 args = ["-q", "-x"]
 
@@ -240,7 +240,7 @@ pattern = "sql/labels.sql"
 exclude-operators = ["string-literal"]
 ```
 
-Instead of `[tool.pysqlmut.pytest]`, `command = "..."` runs any test command, in a new process per mutant.
+Instead of `[tool.pysqlmut.pytest]`, a `command = "..."` directly under `[tool.pysqlmut]` runs any test command, in a new process per mutant.
 With the settings in place, `pysqlmut run` needs no arguments. Unknown settings and values of the wrong type
 are reported before anything runs.
 

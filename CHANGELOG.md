@@ -7,8 +7,12 @@ settings or the report format.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-13
+
 ### Changed
 
+- `[tool.pysqlmut.pytest] python` is now called `command`, like the value of `--pytest`; the old name is
+  reported with a hint.
 - The help and the README name the value of `--pytest` `COMMAND` instead of `PYTHON`: it is the command that
   starts the project's Python, such as `uv run python`, not a Python version.
 
@@ -37,5 +41,6 @@ First release.
 - Survivors grouped by the shape of the lines they changed, and versioned JSON reports.
 - A getting-started guide with an example project, a roadmap, and a security policy.
 
-[Unreleased]: https://github.com/pmayd/pysqlmut/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pmayd/pysqlmut/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/pmayd/pysqlmut/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/pmayd/pysqlmut/releases/tag/v0.1.0

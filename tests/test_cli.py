@@ -19,7 +19,7 @@ files = ["*.sql"]
 operators = ["comparison"]
 
 [tool.pysqlmut.pytest]
-python = {sys.executable!r}
+command = {sys.executable!r}
 tests = ["."]
 args = ["-q", "-p", "no:cacheprovider"]
 """

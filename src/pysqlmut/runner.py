@@ -326,7 +326,7 @@ def run(
     project: Path,
     *,
     command: str | None = None,
-    pytest_python: str | None = None,
+    pytest_command: str | None = None,
     tests: Sequence[str] = (),
     pytest_args: Sequence[str] = (),
     workers: int = DEFAULT_WORKERS,
@@ -335,7 +335,7 @@ def run(
     progress: Callable[[Result], None] | None = None,
 ) -> list[Result]:
     """Run the tests against every mutant and classify each one, in the order of the mutants."""
-    if (command is None) == (pytest_python is None):
+    if (command is None) == (pytest_command is None):
         raise ValueError("give exactly one of a shell command and a pytest Python")
     project = project.resolve()
     # A mutant's path may be absolute or relative to the working directory; inside a copy it must be
@@ -356,7 +356,7 @@ def run(
                     copy,
                     _env(project, copy),
                     script=script,
-                    python=pytest_python or "",
+                    python=pytest_command or "",
                     tests=tests,
                     args=pytest_args,
                     timeout=timeout,

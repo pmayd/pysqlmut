@@ -37,7 +37,7 @@ UNREAD = "SELECT 1 WHERE 1 = 1;\n"
 PYTEST_COMMAND = f"{sys.executable} -m pytest -q -p no:cacheprovider"
 MODES: dict[str, dict[str, Any]] = {
     "command": {"command": PYTEST_COMMAND},
-    "pytest workers": {"pytest_python": sys.executable, "pytest_args": ["-q", "-p", "no:cacheprovider"]},
+    "pytest workers": {"pytest_command": sys.executable, "pytest_args": ["-q", "-p", "no:cacheprovider"]},
 }
 
 

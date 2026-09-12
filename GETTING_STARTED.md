@@ -30,11 +30,11 @@ def test_revenue_per_customer_largest_first():
 
 The test passes. The question is whether it would fail if the query were wrong.
 
-`pyproject.toml` tells pysqlmut where the SQL is and how to run the tests. `python = "uv run python"` is the
+`pyproject.toml` tells pysqlmut where the SQL is and how to run the tests. `command = "uv run python"` is the
 command that starts the Python of this project, where pytest and DuckDB are installed. pysqlmut itself is
 installed apart from the project, so it runs the tests in that Python and, for each mutant, only the tests
-that read the changed file. The [README](README.md#choosing-a-runner) explains this runner and the alternative,
-`command`, which runs any test command.
+that read the changed file. The [README](README.md#choosing-a-runner) explains this runner and the alternative:
+a `command` directly under `[tool.pysqlmut]`, or `--command`, which runs any test command.
 
 ```toml
 [tool.pysqlmut]
@@ -42,7 +42,7 @@ dialect = "duckdb"
 files = ["sql/*.sql"]
 
 [tool.pysqlmut.pytest]
-python = "uv run python"
+command = "uv run python"
 tests = ["tests"]
 args = ["-q"]
 ```

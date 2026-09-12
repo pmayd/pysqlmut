@@ -208,9 +208,9 @@ def run_command(
         _fail("give either --command or --pytest, not both")
     config = _config(project, dialect, operators)
     command = command if command is not None else None if pytest is not None else config.command
-    pytest_python = pytest if pytest is not None else None if command is not None else config.pytest_python
-    if (command is None) == (pytest_python is None):
-        _fail("give --command or --pytest, or set command or [tool.pysqlmut.pytest] python")
+    pytest_command = pytest if pytest is not None else None if command is not None else config.pytest_command
+    if (command is None) == (pytest_command is None):
+        _fail("give --command or --pytest, or set command or [tool.pysqlmut.pytest] command")
     project = project.resolve()
     workers = workers if workers is not None else config.workers
     # The generation processes end before the test workers start.
@@ -219,7 +219,7 @@ def run_command(
         known = accepted.load(_accepted_path(project, accepted_file, config))
     except ValueError as error:
         _fail(str(error))
-    how = command or f"pytest workers ({pytest_python})"
+    how = command or f"pytest workers ({pytest_command})"
     typer.echo(f"{len(mutants)} mutants, {workers} worker{'' if workers == 1 else 's'}: {how}")
 
     done = 0
@@ -236,7 +236,7 @@ def run_command(
             mutants,
             project,
             command=command,
-            pytest_python=pytest_python,
+            pytest_command=pytest_command,
             tests=tests if tests is not None else config.tests,
             pytest_args=shlex.split(pytest_args) if pytest_args is not None else config.pytest_args,
             workers=workers,

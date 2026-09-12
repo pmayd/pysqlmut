@@ -9,6 +9,6 @@ dialect = "duckdb"
 files = ["sql/*.sql"]
 
 [tool.pysqlmut.pytest]
-python = "uv run python"
+command = "uv run python"
 tests = ["tests"]
 args = ["-q"]

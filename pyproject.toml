@@ -1,6 +1,6 @@
 [project]
 name = "pysqlmut"
-version = "0.1.0"
+version = "0.1.1"
 description = "Mutation testing for SQL: change SQL files in small, valid ways and report the changes your tests miss."
 readme = "README.md"
 authors = [

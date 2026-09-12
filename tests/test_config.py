@@ -53,6 +53,7 @@ def test_without_settings_every_operator_runs(tmp_path: Path):
         ("timeout = -1", "timeout must be a positive number"),
         ("operators = []", "names no operator"),
         ('[tool.pysqlmut.pytest]\npyton = "python"', r"unknown \[tool\.pysqlmut\.pytest\] settings: pyton"),
+        ('[tool.pysqlmut.pytest]\npython = "python"', "python is now called command"),
         ('[[tool.pysqlmut.file]]\nexclude-operators = ["case"]', "needs a pattern"),
     ],
 )

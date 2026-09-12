@@ -28,7 +28,7 @@ _KEYS = {
     "workers",
     "timeout",
 }
-_PYTEST_KEYS = {"python", "tests", "args"}
+_PYTEST_KEYS = {"command", "tests", "args"}
 _FILE_KEYS = {"pattern", "exclude-operators"}
 
 
@@ -50,7 +50,7 @@ class Config:
     file_rules: tuple[FileRule, ...] = ()
     accepted: str | None = None
     command: str | None = None
-    pytest_python: str | None = None
+    pytest_command: str | None = None
     tests: tuple[str, ...] = ()
     pytest_args: tuple[str, ...] = ()
     workers: int = DEFAULT_WORKERS
@@ -121,6 +121,8 @@ def load_config(project: Path) -> Config:
     settings = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("tool", {}).get("pysqlmut", {})
     _check_keys(settings, _KEYS, "[tool.pysqlmut]")
     pytest_settings = settings.get("pytest", {})
+    if "python" in pytest_settings:
+        raise ValueError("[tool.pysqlmut.pytest] python is now called command")
     _check_keys(pytest_settings, _PYTEST_KEYS, "[tool.pysqlmut.pytest]")
     rules = []
     for rule in settings.get("file", []):
@@ -141,7 +143,7 @@ def load_config(project: Path) -> Config:
         file_rules=tuple(rules),
         accepted=_string(settings, "accepted", table),
         command=_string(settings, "command", table),
-        pytest_python=_string(pytest_settings, "python", "[tool.pysqlmut.pytest]"),
+        pytest_command=_string(pytest_settings, "command", "[tool.pysqlmut.pytest]"),
         tests=_strings(pytest_settings, "tests", "[tool.pysqlmut.pytest]"),
         pytest_args=_strings(pytest_settings, "args", "[tool.pysqlmut.pytest]"),
         workers=workers,
