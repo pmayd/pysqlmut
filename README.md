@@ -1,5 +1,8 @@
 # pysqlmut
 
+[![PyPI version](https://img.shields.io/pypi/v/pysqlmut)](https://pypi.org/project/pysqlmut/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pysqlmut)](https://pypi.org/project/pysqlmut/)
+[![GitHub release](https://img.shields.io/github/v/release/pmayd/pysqlmut)](https://github.com/pmayd/pysqlmut/releases)
 [![CI](https://github.com/pmayd/pysqlmut/actions/workflows/ci.yml/badge.svg)](https://github.com/pmayd/pysqlmut/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -146,6 +149,69 @@ each SQL file is read by only a few tests, it is much faster than `--command`.
 A change that provably cannot alter any result is left out: `UNION ALL` and `UNION` return the same rows when
 every branch returns unique rows and each pair of branches differs in a literal column.
 
+## Command reference
+
+Every option can also come from `[tool.pysqlmut]` (see [Configuration](#configuration)); an option on the command
+line wins over the setting. `pysqlmut COMMAND --help` prints the same options.
+
+### `pysqlmut generate [FILES]` (alias `pysqlmut list`)
+
+Generates the mutants and shows why candidates were rejected, without running any test.
+
+| Option | Meaning | Default or setting |
+|---|---|---|
+| `FILES` | SQL files to mutate | the `files` setting |
+| `--dialect NAME` | sqlglot dialect the SQL is written in, such as `duckdb`, `snowflake`, `bigquery`, `postgres` | `dialect` |
+| `--operators LIST` | comma-separated operators to use, from the [Operators](#operators) table | `operators`, else all |
+| `--project DIR` | project root: where `pyproject.toml` is read and relative paths start | the working directory |
+| `--show` | print every mutant with its line before and after | off |
+| `--workers N` | processes that generate mutants in parallel | `workers`, else 1 |
+
+### `pysqlmut run [FILES]`
+
+Runs the tests against every mutant and prints the results grouped by the code they changed. It takes the
+options of `generate` except `--show`, and these:
+
+| Option | Meaning | Default or setting |
+|---|---|---|
+| `--command COMMAND` | shell command that runs your tests, started anew for every mutant | `command` |
+| `--pytest COMMAND` | command that starts your project's Python, for the pytest runner; see [Choosing a runner](#choosing-a-runner) | `[tool.pysqlmut.pytest] python` |
+| `--tests PATH` | pytest path to collect; repeat it for several | `[tool.pysqlmut.pytest] tests`, else pytest's own settings |
+| `--pytest-args "ARGS"` | extra pytest options in one string, such as `"-q -x"` | `[tool.pysqlmut.pytest] args` |
+| `--workers N` | copies of the project that test mutants in parallel | `workers`, else 1 |
+| `--timeout SECONDS` | time one mutant's tests may take before the mutant counts as timeout; the first run of the unchanged tests gets at least 600 | `timeout`, else 300 |
+| `--accepted PATH` | file of accepted survivors, relative to the working directory | `accepted`, else `pysqlmut-accepted.json` in the project |
+| `--report PATH` | write every result as JSON, for `report` and `accept` | no report |
+| `--top N` | how many survivor groups to print | 30 |
+
+Give exactly one of `--command` and `--pytest`, or set one of them in the settings.
+
+### `pysqlmut report REPORT_FILE`
+
+Prints the results of a JSON report again, grouped by the code they changed.
+
+| Option | Meaning | Default |
+|---|---|---|
+| `REPORT_FILE` | a report written by `run --report` | required |
+| `--status LIST` | comma-separated statuses to show: `caught`, `survived`, `not covered`, `accepted`, `timeout`, `error` | `survived,not covered` |
+| `--top N` | how many groups to print | 30 |
+
+### `pysqlmut accept REPORT_FILE`
+
+Records the survivors of a report as reviewed, so later runs neither run nor report them.
+
+| Option | Meaning | Default or setting |
+|---|---|---|
+| `REPORT_FILE` | a report written by `run --report` | required |
+| `--operators LIST` | accept only the survivors of these comma-separated operators | all survivors |
+| `--project DIR` | project root, for the `accepted` setting | the working directory |
+| `--accepted PATH` | file of accepted survivors, relative to the working directory | `accepted`, else `pysqlmut-accepted.json` in the project |
+
+### Everywhere
+
+`--help` shows a command's options. `pysqlmut --install-completion` installs shell completion for the current
+shell, and `--show-completion` prints it to copy.
+
 ## Configuration
 
 Settings live in the tested project's `pyproject.toml`; command line options override them. Paths in the
@@ -177,8 +243,22 @@ are reported before anything runs.
 
 ## Reviewing survivors
 
-- `-- pysqlmut: skip` at the end of a line excludes that line; `-- pysqlmut: off` and `-- pysqlmut: on`
-  exclude a block, including changes that would reach into it.
+- **Exclude SQL from mutation with comments in the SQL file itself.** `-- pysqlmut: skip` at the end of a line
+  excludes that line. `-- pysqlmut: off` and `-- pysqlmut: on`, each on a line of its own, exclude the lines
+  between them, and any change that would reach into them:
+
+  ```sql
+  SELECT customer, SUM(amount) AS revenue
+  FROM orders
+  WHERE status = 'paid'  -- pysqlmut: skip
+  -- pysqlmut: off
+    AND created_at >= DATE '2020-01-01'
+    AND region <> 'test'
+  -- pysqlmut: on
+  GROUP BY customer;
+  ```
+
+  Here pysqlmut changes nothing on the `WHERE` line and the two lines between `off` and `on`.
 - `pysqlmut accept pysqlmut-report.json` records the survivors of a report as reviewed, and later runs neither
   run nor report them. A survivor is identified by its file, operator, description and the line before and
   after the change, so edits elsewhere in the file keep it accepted. `--operators` accepts only some
