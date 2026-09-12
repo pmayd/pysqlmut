@@ -38,9 +38,9 @@ class _ReadRecorder:
         finally:
             self.current = ""
 
-    def saw(self, file: object) -> None:
+    def saw(self, file: Any) -> None:
         try:
-            path = os.path.realpath(os.fspath(file))  # ty: ignore[invalid-argument-type]
+            path = os.path.realpath(os.fspath(file))
         except TypeError:
             return
         if path in self.watched:
@@ -62,8 +62,8 @@ def main() -> None:
         return real_open(file, *args, **kwargs)
 
     # pathlib.Path.read_text and builtin open both go through io.open.
-    builtins.open = open_and_record
-    io.open = open_and_record
+    builtins.open = open_and_record  # ty: ignore[invalid-assignment]
+    io.open = open_and_record  # ty: ignore[invalid-assignment]
 
     for line in sys.stdin:
         request = json.loads(line)
