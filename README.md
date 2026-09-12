@@ -26,8 +26,10 @@ Early development. The command line, the settings and the report format may stil
 uv tool install pysqlmut      # or: pipx install pysqlmut
 ```
 
-- pysqlmut needs Python 3.12 or newer and runs on Linux, macOS and Windows through WSL.
-- With `--pytest`, the tested project's own environment needs pytest 8.1 or newer, on Python 3.9 or newer.
+- pysqlmut needs Python 3.12 or newer and runs on Linux, macOS and Windows through WSL. Installed as a tool, it
+  lives in an environment of its own, apart from your project.
+- Your tests keep running in your project's own environment. For the pytest runner, that environment needs
+  pytest 8.1 or newer on Python 3.9 or newer; see [Choosing a runner](#choosing-a-runner).
 
 ## Quick start
 
@@ -67,16 +69,37 @@ the file stays as it is, comments, formatting and line endings included. Stateme
 skipped. For the same SQL and settings, the mutants and their order are always the same.
 
 **Running tests.** Every worker gets its own copy of the project, which shares the project's virtual
-environment; your working tree is never changed. There are two runners:
-
-- `--command "..."` runs any shell command in a new process for every mutant.
-- `--pytest PYTHON` keeps one pytest process per copy. A first run records which test reads which SQL file,
-  directly or through a fixture, and each mutant then runs only those tests, in a fork of that process that
-  imports the project's modules again. Files read while modules are imported make every test run.
+environment; your working tree is never changed. The tests run with one of two runners, described next.
 
 Ctrl-C or a timeout ends the test processes a run started. A run stops before testing any mutant when the
 tests fail on the unchanged project, or when they read the project itself instead of the copy that holds the
 mutant, since no result would mean anything then.
+
+## Choosing a runner
+
+pysqlmut has to run your tests once for every mutant, so how it runs them decides how long a run takes.
+
+**`--command "..."` runs any test command.** Give it the command you would type, for example
+`--command "uv run pytest tests/sql"`, `--command "python -m unittest"` or `--command "make test"`. For every
+mutant, pysqlmut starts that command in a new process and reads its exit code. This works with every test
+tool, but each mutant pays for starting Python, importing your dependencies and running the whole suite.
+
+Use it to try pysqlmut, for test tools other than pytest, and for tests that read the SQL in another process,
+such as dbt, a database command line tool or pytest-xdist workers.
+
+**`--pytest PYTHON` runs pytest inside your project's Python.** Give it the command that starts the Python of
+your project's environment, the one with pytest and your project's dependencies installed: `uv run python`,
+`poetry run python`, or a path such as `.venv/bin/python`. pysqlmut needs it because it is installed apart from
+your project, so its own Python cannot import your code or your test dependencies.
+
+pysqlmut starts pytest in that Python once per worker and keeps it running. A first run records which test
+reads which SQL file, directly or through a fixture. For each mutant, pysqlmut then runs only the tests that
+read the changed file, in a fork of the running process that imports your project's modules again, so
+libraries such as DuckDB or pandas are not imported again for every mutant. When a file is read while modules
+are imported, every test runs for its mutants.
+
+Use it when your tests are pytest tests; pytest also runs `unittest.TestCase` tests. On a large suite where
+each SQL file is read by only a few tests, it is much faster than `--command`.
 
 ## Results
 

@@ -175,14 +175,19 @@ def run_command(
     operators: Operators = None,
     project: Project = Path(),
     command: Annotated[
-        str | None, typer.Option(help="Shell command that runs all tests; a new process per mutant.")
+        str | None,
+        typer.Option(
+            help="Shell command that runs your tests, e.g. 'uv run pytest' or 'python -m unittest'; started anew for "
+            "every mutant.",
+        ),
     ] = None,
     pytest: Annotated[
         str | None,
         typer.Option(
             metavar="PYTHON",
-            help="The project's Python, e.g. 'uv run python': long-lived pytest workers that run only the tests "
-            "reading the mutated file.",
+            help="Command that starts your project's Python, where pytest and your dependencies are installed, e.g. "
+            "'uv run python' or '.venv/bin/python'. Keeps pytest running and runs only the tests that read the "
+            "mutated file.",
         ),
     ] = None,
     tests: Annotated[list[str] | None, typer.Option(help="Pytest path to collect; repeatable.")] = None,
