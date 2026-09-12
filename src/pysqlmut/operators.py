@@ -377,6 +377,56 @@ def distinct(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candida
             )
 
 
+def case(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
+    """Replace the ELSE value of a CASE with NULL, and drop one WHEN branch of a CASE that has several."""
+    if not isinstance(node, exp.Case):
+        return
+    default = node.args.get("default")
+    default_span = source.node_span(default, offset) if default is not None else None
+    if default_span is not None and not isinstance(default, exp.Null):
+
+        def else_null(n: exp.Expr) -> exp.Expr:
+            n.set("default", exp.Null())
+            return n
+
+        yield Candidate("case", "ELSE value -> NULL", Patch(default_span.start, default_span.end, "NULL"), else_null)
+
+    branches = node.args.get("ifs") or []
+    if len(branches) < 2:
+        return
+    for position, branch in enumerate(branches):
+        condition = source.node_span(branch.this, offset)
+        value = source.node_span(branch.args["true"], offset)
+        first = source.token_at(condition.start) if condition else None
+        following = source.first_token_from(value.end) if value else None
+        if first is None or following is None or first == 0 or source.tokens[first - 1].token_type != TokenType.WHEN:
+            continue
+
+        def drop(n: exp.Expr, position: int = position) -> exp.Expr:
+            n.set("ifs", [b.copy() for i, b in enumerate(n.args["ifs"]) if i != position])
+            return n
+
+        patch = Patch(source.tokens[first - 1].start, source.tokens[following].start, "")
+        yield Candidate("case", f"drop WHEN branch {position + 1}", patch, drop)
+
+
+def string_literal(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
+    """Change a string literal, so that a test has to depend on its exact value."""
+    if not isinstance(node, exp.Literal) or not node.is_string or "start" not in node.meta:
+        return
+    index = source.token_at(offset + node.meta["start"])
+    if index is None:
+        return
+    value = f"{node.this}_mutated"
+    replacement = "'" + value.replace("'", "''") + "'"
+    yield Candidate(
+        "string-literal",
+        f"'{node.this}' -> {replacement}",
+        _replace_token(source, index, replacement),
+        lambda _: exp.Literal.string(value),
+    )
+
+
 ALL_OPERATORS: dict[str, Operator] = {
     "comparison": comparison,
     "logical": logical,
@@ -390,4 +440,6 @@ ALL_OPERATORS: dict[str, Operator] = {
     "arithmetic": arithmetic,
     "literal": literal,
     "distinct": distinct,
+    "case": case,
+    "string-literal": string_literal,
 }

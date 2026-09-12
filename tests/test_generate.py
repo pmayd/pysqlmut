@@ -73,6 +73,25 @@ def test_operators_work_across_statements_and_set_operations(operator, old, new)
     assert replaced(UNIONS, old, new) in mutated(UNIONS, operator)
 
 
+LABELS = """SELECT
+    CASE WHEN a = 1 THEN 'one' WHEN a = 2 THEN 'two' ELSE 'many' END AS label
+FROM t;
+"""
+
+
+@pytest.mark.parametrize(
+    ("operator", "old", "new"),
+    [
+        ("case", "ELSE 'many'", "ELSE NULL"),
+        ("case", "WHEN a = 1 THEN 'one' ", ""),
+        ("case", "WHEN a = 2 THEN 'two' ", ""),
+        ("string-literal", "'one'", "'one_mutated'"),
+    ],
+)
+def test_case_branches_and_string_literals_change_on_their_own(operator, old, new):
+    assert replaced(LABELS, old, new) in mutated(LABELS, operator)
+
+
 def test_statements_sqlglot_cannot_parse_are_skipped():
     sql = """GRANT SELECT ON TABLE s.t TO ROLE reader;
 EXECUTE IMMEDIATE $$
