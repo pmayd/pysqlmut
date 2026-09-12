@@ -134,6 +134,40 @@ def test_union_all_changes_where_rows_may_repeat(old, new):
     assert mutated(replaced(LABEL_BLOCKS, old, new), "union")
 
 
+COLUMNS = """WITH months AS (
+    SELECT gid, freeze_month, next_month FROM inv
+)
+SELECT
+    f.gid,
+    f.hires AS hiring,
+    f.hires_former_apprentices AS apprentices,
+    f.action_reason,
+    m.next_month
+FROM fluc AS f
+INNER JOIN months AS m ON f.gid = m.gid;
+"""
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        # The columns share the word "hires"; action_reason shares none.
+        ("f.hires AS hiring", "f.hires_former_apprentices AS hiring"),
+        # freeze_month is not read by this SELECT but is an output of the CTE m names.
+        ("m.next_month\nFROM", "m.freeze_month\nFROM"),
+    ],
+)
+def test_a_column_is_replaced_by_the_likeliest_mix_up_of_the_same_table(old, new):
+    assert replaced(COLUMNS, old, new) in mutated(COLUMNS, "column")
+
+
+def test_columns_in_group_by_and_exclude_lists_stay():
+    sql = "SELECT inv.* EXCLUDE (a, b), inv.c, inv.d FROM inv GROUP BY inv.c, inv.d;\n"
+    mutants = mutated(sql, "column")
+    assert mutants
+    assert all("EXCLUDE (a, b)" in mutant and "GROUP BY inv.c, inv.d;" in mutant for mutant in mutants)
+
+
 def test_a_process_pool_generates_the_same_mutants_in_the_same_order():
     source = SqlSource(Path("q.sql"), QUERY + UNIONS + LABELS, "snowflake")
     serial = generate(source)

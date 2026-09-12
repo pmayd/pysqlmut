@@ -5,6 +5,7 @@ change applied to the parse tree. The generator keeps a candidate only when the 
 to exactly that changed tree, so an operator may propose a patch it is unsure about.
 """
 
+import difflib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -500,6 +501,78 @@ def string_literal(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[C
     )
 
 
+def _source_outputs(select: exp.Select, qualifier: str) -> list[exp.Identifier]:
+    """The output columns of the CTE or subquery a qualifier names, when they are known without a schema."""
+    for source in [select.args.get("from_"), *select.args.get("joins", [])]:
+        relation = source.this if isinstance(source, exp.From | exp.Join) else None
+        if relation is None or relation.alias_or_name != qualifier:
+            continue
+        query = relation.this if isinstance(relation, exp.Subquery) else None
+        if isinstance(relation, exp.Table) and not relation.db:
+            ancestor: exp.Expr | None = select
+            while ancestor is not None and query is None:
+                with_ = ancestor.args.get("with_")
+                ctes = with_.expressions if isinstance(with_, exp.With) else []
+                query = next((cte.this for cte in ctes if cte.alias == relation.name), None)
+                ancestor = ancestor.parent
+        if not isinstance(query, exp.Query) or query.is_star:
+            return []
+        outputs = [e.args.get("alias") if isinstance(e, exp.Alias) else e.this for e in query.selects]
+        return [o for o in outputs if isinstance(o, exp.Identifier)]
+    return []
+
+
+def _likeliest_mix_up(name: str, others: dict[str, exp.Identifier]) -> exp.Identifier | None:
+    """The other column most easily confused with a name: most shared words, then most similar spelling."""
+    words = set(name.lower().split("_"))
+
+    def closeness(other: str) -> tuple[int, float]:
+        shared = len(words & set(other.lower().split("_")))
+        return shared, difflib.SequenceMatcher(None, name.lower(), other.lower()).ratio()
+
+    best = max(sorted(others), key=closeness, default=None)
+    return others[best] if best is not None else None
+
+
+def column(source: SqlSource, node: exp.Expr, offset: int) -> Iterator[Candidate]:
+    """Replace a qualified column with the likeliest mix-up among the other columns of the same table.
+
+    Those are the columns the same SELECT reads from that table, and the output columns of a CTE or subquery.
+    Columns in GROUP BY and in EXCLUDE lists are left alone, since changing only them makes the query fail.
+    """
+    if not isinstance(node, exp.Column) or not isinstance(node.this, exp.Identifier) or not node.table:
+        return
+    select = node.parent_select
+    if select is None or isinstance(node.find_ancestor(exp.Group, exp.Star, exp.Select), exp.Group | exp.Star):
+        return
+    identifier = node.this
+    if "start" not in identifier.meta:
+        return
+    candidates = {
+        other.this.name: other.this
+        for other in select.find_all(exp.Column)
+        if other.table == node.table and isinstance(other.this, exp.Identifier) and other.parent_select is select
+    }
+    candidates.update({output.name: output for output in _source_outputs(select, node.table)})
+    others = {name: ident for name, ident in candidates.items() if name.lower() != identifier.name.lower()}
+    replacement = _likeliest_mix_up(identifier.name, others)
+    index = source.token_at(offset + identifier.meta["start"])
+    if replacement is None or index is None:
+        return
+    text = replacement.sql(dialect=source.dialect)
+
+    def mutate(n: exp.Expr) -> exp.Expr:
+        n.set("this", replacement.copy())
+        return n
+
+    yield Candidate(
+        "column",
+        f"{node.table}.{identifier.name} -> {node.table}.{replacement.name}",
+        _replace_token(source, index, text),
+        mutate,
+    )
+
+
 ALL_OPERATORS: dict[str, Operator] = {
     "comparison": comparison,
     "logical": logical,
@@ -515,4 +588,5 @@ ALL_OPERATORS: dict[str, Operator] = {
     "distinct": distinct,
     "case": case,
     "string-literal": string_literal,
+    "column": column,
 }
