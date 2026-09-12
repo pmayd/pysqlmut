@@ -17,8 +17,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: uv sync --locked --all-groups
       - run: uv run ruff format --check
       - run: uv run ruff check
@@ -32,19 +34,50 @@ jobs:
         python: ["3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked --all-groups
       - run: uv run pytest
 
+  worker-python:
+    # The pytest worker runs with the tested project's Python, which may be older than pysqlmut's.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: The pytest worker starts on Python 3.9 with pytest 8.1
+        run: uv run --no-project --python 3.9 --with "pytest==8.1.*" python src/pysqlmut/pytest_worker.py < /dev/null
+
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: uv build
       - run: uvx twine check --strict dist/*
       - name: Smoke test the wheel
         run: uv tool run --from ./dist/pysqlmut-*.whl pysqlmut --help
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: Audit the workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uvx zizmor@1.30.1 --format github .github
+      - name: Audit the dependencies for known vulnerabilities
+        run: |
+          uv export --frozen --all-groups --no-emit-project --format requirements-txt > "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit@2.10.1 --strict --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
