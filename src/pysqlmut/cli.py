@@ -6,6 +6,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from pysqlmut import report
 from pysqlmut.mutants import Mutant, generate
 from pysqlmut.operators import ALL_OPERATORS
 from pysqlmut.runner import (
@@ -88,12 +89,19 @@ def _run(args: argparse.Namespace) -> int:
     for name in sorted({r.operator for r in results}):
         print(f"  {name:15} " + " / ".join(f"{counts[name, status]:5}" for status in _STATUSES))
     survivors = [r for r in results if r.status in {SURVIVED, NOT_COVERED}]
-    print(f"\n{len(survivors)} of {len(results)} mutants survived or were not covered")
-    for result in survivors:
-        print(f"  {result.path}:{result.line} {result.operator} ({result.description}) [{result.status}]")
-        print(f"      - {result.before}")
-        print(f"      + {result.after}")
+    groups = report.group(survivors)
+    print(f"\n{len(survivors)} of {len(results)} mutants survived or were not covered, in {len(groups)} groups")
+    print(report.render(groups, args.top))
     return 1 if survivors else 0
+
+
+def _report(args: argparse.Namespace) -> int:
+    statuses = set(args.status.split(","))
+    results = [r for r in report.load(args.report_file) if r.status in statuses]
+    groups = report.group(results)
+    print(f"{len(results)} results with status {', '.join(sorted(statuses))}, in {len(groups)} groups")
+    print(report.render(groups, args.top))
+    return 0
 
 
 def _add_selection(parser: argparse.ArgumentParser) -> None:
@@ -127,7 +135,14 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--workers", type=int, default=1, help="parallel copies of the project")
     run_parser.add_argument("--timeout", type=float, default=300.0, help="seconds before a run counts as timeout")
     run_parser.add_argument("--report", type=Path, help="write every result as JSON")
+    run_parser.add_argument("--top", type=int, default=30, help="how many survivor groups to print")
     run_parser.set_defaults(handler=_run)
+
+    report_parser = commands.add_parser("report", help="group the results of a JSON report")
+    report_parser.add_argument("report_file", type=Path)
+    report_parser.add_argument("--status", default=f"{SURVIVED},{NOT_COVERED}", help="comma-separated statuses")
+    report_parser.add_argument("--top", type=int, default=30, help="how many groups to print")
+    report_parser.set_defaults(handler=_report)
 
     args = parser.parse_args(argv)
     return args.handler(args)

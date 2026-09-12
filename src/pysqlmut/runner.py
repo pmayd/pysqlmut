@@ -43,8 +43,8 @@ class Result:
     seconds: float
     before: str
     after: str
-    # How many tests the mutant ran: None means all of them.
-    tests: int | None
+    # How many tests the mutant ran: None means all of them (and reports written before selection existed).
+    tests: int | None = None
 
 
 class BaselineFailedError(RuntimeError):
