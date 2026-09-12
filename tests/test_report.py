@@ -28,3 +28,12 @@ def test_a_repeated_rule_is_one_group_counted_once_per_place():
     assert [len(g.results) for g in groups] == [3, 1, 1]
     assert groups[0].operator == "comparison"
     assert [r.line for r in groups[0].results] == [10, 20, 30]
+
+
+def test_two_different_changes_of_one_line_with_the_same_description_stay_apart():
+    before = "WHEN is_delegation AND p1_in_scope AND NOT p2_in_scope"
+    results = [
+        result("drop-condition", "drop the right condition", before, "WHEN is_delegation AND p1_in_scope"),
+        result("drop-condition", "drop the right condition", before, "WHEN is_delegation AND NOT p2_in_scope"),
+    ]
+    assert [len(g.results) for g in group(results)] == [1, 1]

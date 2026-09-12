@@ -36,13 +36,18 @@ class Group:
 
 
 def group(results: Iterable[Result]) -> list[Group]:
-    """Group results by operator, masked description and masked original line, largest group first."""
-    groups: dict[tuple[str, str, str], list[Result]] = {}
+    """Group results by operator, masked description and the masked line before and after, largest group first.
+
+    The line after the change is part of the key: one line can hold two different changes with the same
+    description, such as dropping the inner or the outer condition of a chained AND.
+    """
+    groups: dict[tuple[str, str, str, str], list[Result]] = {}
     for result in results:
-        key = (result.operator, _NUMBER.sub("N", _STRING.sub("'S'", result.description)), shape(result.before))
+        description = _NUMBER.sub("N", _STRING.sub("'S'", result.description))
+        key = (result.operator, description, shape(result.before), shape(result.after))
         groups.setdefault(key, []).append(result)
     ordered = sorted(groups.items(), key=lambda item: (-len(item[1]), item[0]))
-    return [Group(operator, description, line, tuple(members)) for (operator, description, line), members in ordered]
+    return [Group(operator, description, line, tuple(members)) for (operator, description, line, _), members in ordered]
 
 
 def load(path: Path) -> list[Result]:
