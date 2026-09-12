@@ -151,61 +151,64 @@ every branch returns unique rows and each pair of branches differs in a literal 
 
 ## Command reference
 
-Every option can also come from `[tool.pysqlmut]` (see [Configuration](#configuration)); an option on the command
-line wins over the setting. `pysqlmut COMMAND --help` prints the same options.
+`pysqlmut COMMAND --help` prints the same options. The tables use the same columns throughout:
+
+- **Default** is what pysqlmut uses when neither the option nor the setting is given. *Required* means that
+  either the option or the setting must be given.
+- **Setting** names the key in `[tool.pysqlmut]` that can take the option's place (see
+  [Configuration](#configuration)); `pytest.python` means `python` in `[tool.pysqlmut.pytest]`. An option on the
+  command line wins over the setting. `—` means there is no setting.
 
 ### `pysqlmut generate [FILES]` (alias `pysqlmut list`)
 
 Generates the mutants and shows why candidates were rejected, without running any test.
 
-| Option | Meaning | Default or setting |
-|---|---|---|
-| `FILES` | SQL files to mutate | the `files` setting |
-| `--dialect NAME` | sqlglot dialect the SQL is written in, such as `duckdb`, `snowflake`, `bigquery`, `postgres` | `dialect` |
-| `--operators LIST` | comma-separated operators to use, from the [Operators](#operators) table | `operators`, else all |
-| `--project DIR` | project root: where `pyproject.toml` is read and relative paths start | the working directory |
-| `--show` | print every mutant with its line before and after | off |
-| `--workers N` | processes that generate mutants in parallel | `workers`, else 1 |
+| Argument or option | Meaning | Default | Setting |
+|---|---|---|---|
+| `FILES` | SQL files to mutate | required | `files` |
+| `--dialect NAME` | sqlglot dialect of the SQL, such as `duckdb`, `snowflake`, `bigquery`, `postgres` | required | `dialect` |
+| `--operators LIST` | comma-separated operators to use, from the [Operators](#operators) table | all operators | `operators` |
+| `--project DIR` | project root, where `pyproject.toml` is read and settings paths start | the working directory | — |
+| `--show` | print every mutant with its line before and after | off | — |
+| `--workers N` | processes that generate mutants in parallel | 1 | `workers` |
 
 ### `pysqlmut run [FILES]`
 
-Runs the tests against every mutant and prints the results grouped by the code they changed. It takes the
-options of `generate` except `--show`, and these:
+Runs the tests against every mutant and prints the results grouped by the code they changed. It takes
+`FILES`, `--dialect`, `--operators` and `--project` as `generate` does, and these:
 
-| Option | Meaning | Default or setting |
-|---|---|---|
-| `--command COMMAND` | shell command that runs your tests, started anew for every mutant | `command` |
-| `--pytest COMMAND` | command that starts your project's Python, for the pytest runner; see [Choosing a runner](#choosing-a-runner) | `[tool.pysqlmut.pytest] python` |
-| `--tests PATH` | pytest path to collect; repeat it for several | `[tool.pysqlmut.pytest] tests`, else pytest's own settings |
-| `--pytest-args "ARGS"` | extra pytest options in one string, such as `"-q -x"` | `[tool.pysqlmut.pytest] args` |
-| `--workers N` | copies of the project that test mutants in parallel | `workers`, else 1 |
-| `--timeout SECONDS` | time one mutant's tests may take before the mutant counts as timeout; the first run of the unchanged tests gets at least 600 | `timeout`, else 300 |
-| `--accepted PATH` | file of accepted survivors, relative to the working directory | `accepted`, else `pysqlmut-accepted.json` in the project |
-| `--report PATH` | write every result as JSON, for `report` and `accept` | no report |
-| `--top N` | how many survivor groups to print | 30 |
-
-Give exactly one of `--command` and `--pytest`, or set one of them in the settings.
+| Argument or option | Meaning | Default | Setting |
+|---|---|---|---|
+| `--command COMMAND` | shell command that runs your tests, started anew for every mutant; see [Choosing a runner](#choosing-a-runner) | required, unless `--pytest` is given | `command` |
+| `--pytest COMMAND` | command that starts your project's Python, for the pytest runner | required, unless `--command` is given | `pytest.python` |
+| `--tests PATH` | pytest path to collect; repeat the option for several paths | pytest's own settings | `pytest.tests` |
+| `--pytest-args "ARGS"` | extra pytest options in one string, such as `"-q -x"` | none | `pytest.args` |
+| `--workers N` | copies of the project that test mutants in parallel, and processes that generate them | 1 | `workers` |
+| `--timeout SECONDS` | time one mutant's tests may take before the mutant counts as timeout; the first run of the unchanged tests gets at least 600 seconds | 300 | `timeout` |
+| `--accepted PATH` | file of accepted survivors; the option is relative to the working directory, the setting to the project | `pysqlmut-accepted.json` in the project | `accepted` |
+| `--report PATH` | file to write every result to as JSON, for `report` and `accept` | none | — |
+| `--top N` | how many survivor groups to print | 30 | — |
 
 ### `pysqlmut report REPORT_FILE`
 
 Prints the results of a JSON report again, grouped by the code they changed.
 
-| Option | Meaning | Default |
-|---|---|---|
-| `REPORT_FILE` | a report written by `run --report` | required |
-| `--status LIST` | comma-separated statuses to show: `caught`, `survived`, `not covered`, `accepted`, `timeout`, `error` | `survived,not covered` |
-| `--top N` | how many groups to print | 30 |
+| Argument or option | Meaning | Default | Setting |
+|---|---|---|---|
+| `REPORT_FILE` | report written by `run --report` | required | — |
+| `--status LIST` | comma-separated statuses to show: `caught`, `survived`, `not covered`, `accepted`, `timeout`, `error` | `survived,not covered` | — |
+| `--top N` | how many groups to print | 30 | — |
 
 ### `pysqlmut accept REPORT_FILE`
 
 Records the survivors of a report as reviewed, so later runs neither run nor report them.
 
-| Option | Meaning | Default or setting |
-|---|---|---|
-| `REPORT_FILE` | a report written by `run --report` | required |
-| `--operators LIST` | accept only the survivors of these comma-separated operators | all survivors |
-| `--project DIR` | project root, for the `accepted` setting | the working directory |
-| `--accepted PATH` | file of accepted survivors, relative to the working directory | `accepted`, else `pysqlmut-accepted.json` in the project |
+| Argument or option | Meaning | Default | Setting |
+|---|---|---|---|
+| `REPORT_FILE` | report written by `run --report` | required | — |
+| `--operators LIST` | comma-separated operators whose survivors to accept | all operators | — |
+| `--project DIR` | project root, where `pyproject.toml` is read | the working directory | — |
+| `--accepted PATH` | file of accepted survivors; the option is relative to the working directory, the setting to the project | `pysqlmut-accepted.json` in the project | `accepted` |
 
 ### Everywhere
 
