@@ -7,6 +7,10 @@ settings or the report format.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-13
+
+First release.
+
 ### Added
 
 - Mutant generation for every dialect sqlglot parses. A mutant is a text patch on one expression, kept only
@@ -27,3 +31,6 @@ settings or the report format.
   comments, and a file of accepted survivors.
 - Survivors grouped by the shape of the lines they changed, and versioned JSON reports.
 - A getting-started guide with an example project, a roadmap, and a security policy.
+
+[Unreleased]: https://github.com/pmayd/pysqlmut/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/pmayd/pysqlmut/releases/tag/v0.1.0
