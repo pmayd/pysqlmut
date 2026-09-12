@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "sqlglot>=30.18",
+    "typer>=0.27.2",
 ]
 
 [project.scripts]
@@ -38,6 +39,9 @@ ignore = [
     "PLR0911", # operators return early per node shape
     "PLR0913", # run() takes its options as keyword arguments
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/pysqlmut/cli.py" = ["PLR0917"] # Typer turns each parameter of a command into an option
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

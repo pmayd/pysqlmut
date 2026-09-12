@@ -1,10 +1,12 @@
-"""End to end: run from settings, accept the survivors, and the next run passes without rerunning them."""
+"""End to end through the command line."""
 
 import sys
 import textwrap
 from pathlib import Path
 
-from pysqlmut.cli import main
+from typer.testing import CliRunner
+
+from pysqlmut.cli import app
 from pysqlmut.report import load
 from pysqlmut.runner import ACCEPTED, CAUGHT, SURVIVED
 
@@ -42,6 +44,10 @@ args = ["-q", "-p", "no:cacheprovider"]
 """
 
 
+def invoke(*args: str) -> int:
+    return CliRunner().invoke(app, list(args)).exit_code
+
+
 def test_accepted_survivors_are_neither_rerun_nor_reported(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
@@ -50,14 +56,24 @@ def test_accepted_survivors_are_neither_rerun_nor_reported(tmp_path: Path):
     (project / "test_paid.py").write_text(textwrap.dedent(TEST))
     report = tmp_path / "report.json"
 
-    assert main(["run", "--project", str(project), "--report", str(report)]) == 1
+    assert invoke("run", "--project", str(project), "--report", str(report)) == 1
     first = load(report)
     assert {r.status for r in first} == {CAUGHT, SURVIVED}
 
-    assert main(["accept", str(report), "--project", str(project)]) == 0
+    assert invoke("accept", str(report), "--project", str(project)) == 0
     assert (project / "pysqlmut-accepted.json").exists()
 
-    assert main(["run", "--project", str(project), "--report", str(report)]) == 0
+    assert invoke("run", "--project", str(project), "--report", str(report)) == 0
     second = load(report)
     assert [r.status for r in second] == [ACCEPTED if r.status == SURVIVED else r.status for r in first]
     assert all(r.seconds == 0.0 for r in second if r.status == ACCEPTED)
+
+
+def test_a_file_sqlglot_cannot_tokenize_is_skipped_and_the_others_still_run(tmp_path: Path):
+    (tmp_path / "broken.sql").write_text("SELECT 'never closed FROM t;\n")
+    (tmp_path / "paid.sql").write_text(PAID)
+    files = [str(tmp_path / "broken.sql"), str(tmp_path / "paid.sql")]
+    result = CliRunner().invoke(app, ["list", *files, "--dialect", "duckdb", "--project", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "broken.sql: skipped, cannot tokenize" in result.output
+    assert "paid.sql: 1 statements" in result.output

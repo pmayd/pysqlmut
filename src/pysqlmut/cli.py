@@ -1,12 +1,14 @@
 """Command line interface."""
 
-import argparse
 import shlex
-import sys
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
+from typing import Annotated
+
+import typer
+from sqlglot.errors import SqlglotError
 
 from pysqlmut import accepted, report
 from pysqlmut.config import Config, load_config
@@ -29,53 +31,89 @@ from pysqlmut.source import SqlSource
 _STATUSES = (CAUGHT, SURVIVED, NOT_COVERED, ACCEPTED, TIMEOUT, ERROR)
 _DEFAULT_ACCEPTED = "pysqlmut-accepted.json"
 
+app = typer.Typer(name="pysqlmut", help="Mutation testing for SQL.", no_args_is_help=True)
 
-class UsageError(Exception):
-    """A missing or conflicting setting; printed without a traceback."""
+Files = Annotated[
+    list[Path] | None,
+    # The backslash stops rich markup from reading [tool.pysqlmut] as a style tag.
+    typer.Argument(help="SQL files. Default: the files setting in \\[tool.pysqlmut].", show_default=False),
+]
+Dialect = Annotated[str | None, typer.Option(help="sqlglot dialect, e.g. snowflake, duckdb, bigquery.")]
+Operators = Annotated[str | None, typer.Option(help=f"Comma-separated subset of: {', '.join(ALL_OPERATORS)}.")]
+Project = Annotated[Path, typer.Option(help="Project root.", exists=True, file_okay=False)]
+AcceptedFile = Annotated[
+    str | None, typer.Option("--accepted", help=f"Accepted survivors file. Default: {_DEFAULT_ACCEPTED}.")
+]
+Top = Annotated[int, typer.Option(help="How many groups to print.")]
 
 
-def _config(args: argparse.Namespace) -> Config:
-    config = load_config(args.project)
-    overrides: dict[str, object] = {}
-    if args.dialect:
-        overrides["dialect"] = args.dialect
-    if args.operators:
-        overrides["operators"] = tuple(args.operators.split(","))
-    return replace(config, **overrides)
+def _fail(message: str) -> typer.Exit:
+    typer.echo(f"pysqlmut: {message}", err=True)
+    return typer.Exit(2)
 
 
-def _generations(args: argparse.Namespace, config: Config) -> Iterator[Generation]:
+def _config(project: Path, dialect: str | None, operators: str | None) -> Config:
+    try:
+        config = load_config(project)
+        if dialect:
+            config = replace(config, dialect=dialect)
+        if operators:
+            config = replace(config, operators=tuple(operators.split(",")))
+    except ValueError as error:
+        raise _fail(str(error)) from error
+    return config
+
+
+def _generations(files: list[Path] | None, project: Path, config: Config) -> Iterator[Generation]:
     if config.dialect is None:
-        raise UsageError("no dialect: pass --dialect or set dialect in [tool.pysqlmut]")
-    project = args.project.resolve()
-    files = [path.resolve() for path in args.files] or [path.resolve() for path in config.files_in(project)]
-    if not files:
-        raise UsageError("no SQL files: pass them or set files in [tool.pysqlmut]")
-    for path in files:
-        yield generate(SqlSource.read(path, config.dialect), config.operators_for(path.relative_to(project)))
+        raise _fail("no dialect: pass --dialect or set dialect in [tool.pysqlmut]")
+    project = project.resolve()
+    paths = [path.resolve() for path in files or config.files_in(project)]
+    if not paths:
+        raise _fail("no SQL files: pass them or set files in [tool.pysqlmut]")
+    for path in paths:
+        try:
+            source = SqlSource.read(path, config.dialect)
+        except SqlglotError as error:
+            typer.echo(f"{path}: skipped, cannot tokenize: {error}", err=True)
+            continue
+        yield generate(source, config.operators_for(path.relative_to(project)))
 
 
-def _generate(args: argparse.Namespace) -> int:
-    config = _config(args)
+def generate_command(
+    files: Files = None,
+    dialect: Dialect = None,
+    operators: Operators = None,
+    project: Project = Path(),
+    show: Annotated[bool, typer.Option(help="Print every mutant with its line before and after.")] = False,
+) -> None:
+    """Generate and verify the mutants of SQL files without running tests.
+
+    Mutants are not stored anywhere, so listing them means generating them.
+    """
+    config = _config(project, dialect, operators)
     produced: Counter[str] = Counter()
     rejected: Counter[tuple[str, str]] = Counter()
-    for generation in _generations(args, config):
+    for generation in _generations(files, project, config):
         produced.update(m.operator for m in generation.mutants)
         rejected.update(generation.rejected)
         source = generation.source
-        print(f"{source.path}: {len(source.statements)} statements, {len(generation.mutants)} mutants")
-        if args.show:
+        typer.echo(f"{source.path}: {len(source.statements)} statements, {len(generation.mutants)} mutants")
+        if show:
             for mutant in generation.mutants:
                 before, after = mutant.diff(source.text)
-                print(f"  {mutant.line:5} {mutant.operator:15} {mutant.description}")
-                print(f"        - {before.strip()}")
-                print(f"        + {after.strip()}")
-    print("\nper operator: mutants / rejected")
+                typer.echo(f"  {mutant.line:5} {mutant.operator:15} {mutant.description}")
+                typer.echo(f"        - {before.strip()}")
+                typer.echo(f"        + {after.strip()}")
+    typer.echo("\nper operator: mutants / rejected")
     for name in ALL_OPERATORS:
         reasons = {reason: count for (operator, reason), count in rejected.items() if operator == name}
         if produced[name] or reasons:
-            print(f"  {name:15} {produced[name]:5} / {sum(reasons.values()):<5} {reasons or ''}")
-    return 0
+            typer.echo(f"  {name:15} {produced[name]:5} / {sum(reasons.values()):<5} {reasons or ''}")
+
+
+app.command("generate")(generate_command)
+app.command("list", help="Alias for generate.")(generate_command)
 
 
 def _accepted_results(mutants: list[Mutant], known: set[accepted.Fingerprint], project: Path) -> dict[int, Result]:
@@ -102,20 +140,50 @@ def _accepted_results(mutants: list[Mutant], known: set[accepted.Fingerprint], p
     return results
 
 
-def _run(args: argparse.Namespace) -> int:
-    config = _config(args)
-    command = args.command or (None if args.pytest else config.command)
-    pytest_python = args.pytest or (None if args.command else config.pytest_python)
+@app.command("run")
+def run_command(
+    files: Files = None,
+    dialect: Dialect = None,
+    operators: Operators = None,
+    project: Project = Path(),
+    command: Annotated[
+        str | None, typer.Option(help="Shell command that runs all tests; a new process per mutant.")
+    ] = None,
+    pytest: Annotated[
+        str | None,
+        typer.Option(
+            metavar="PYTHON",
+            help="The project's Python, e.g. 'uv run python': long-lived pytest workers that run only the tests "
+            "reading the mutated file.",
+        ),
+    ] = None,
+    tests: Annotated[list[str] | None, typer.Option(help="Pytest path to collect; repeatable.")] = None,
+    pytest_args: Annotated[str | None, typer.Option(help="Extra pytest options.")] = None,
+    workers: Annotated[int | None, typer.Option(help="Parallel copies of the project.")] = None,
+    timeout: Annotated[float | None, typer.Option(help="Seconds before a run counts as timeout.")] = None,
+    accepted_file: AcceptedFile = None,
+    report_file: Annotated[Path | None, typer.Option("--report", help="Write every result as JSON.")] = None,
+    top: Top = 30,
+) -> None:
+    """Run the tests against every mutant.
+
+    Exits with 1 while survivors remain that nobody accepted, and with 2 when the tests fail without a mutant.
+    """
+    if command and pytest:
+        raise _fail("give either --command or --pytest, not both")
+    config = _config(project, dialect, operators)
+    command = command or (None if pytest else config.command)
+    pytest_python = pytest or (None if command else config.pytest_python)
     if (command is None) == (pytest_python is None):
-        raise UsageError("give --command or --pytest, or set command or [tool.pysqlmut.pytest] python")
-    project = args.project.resolve()
-    mutants = [mutant for generation in _generations(args, config) for mutant in generation.mutants]
-    accepted_file = project / (args.accepted or config.accepted or _DEFAULT_ACCEPTED)
-    skipped = _accepted_results(mutants, accepted.load(accepted_file), project)
+        raise _fail("give --command or --pytest, or set command or [tool.pysqlmut.pytest] python")
+    project = project.resolve()
+    mutants = [mutant for generation in _generations(files, project, config) for mutant in generation.mutants]
+    known = accepted.load(project / (accepted_file or config.accepted or _DEFAULT_ACCEPTED))
+    skipped = _accepted_results(mutants, known, project)
     to_run = [mutant for position, mutant in enumerate(mutants) if position not in skipped]
-    workers = args.workers or config.workers
+    workers = workers or config.workers
     how = command or f"pytest workers ({pytest_python})"
-    print(f"{len(to_run)} mutants to run ({len(skipped)} accepted), {workers} workers: {how}", flush=True)
+    typer.echo(f"{len(to_run)} mutants to run ({len(skipped)} accepted), {workers} workers: {how}")
 
     done = 0
 
@@ -123,7 +191,7 @@ def _run(args: argparse.Namespace) -> int:
         nonlocal done
         done += 1
         if done % 50 == 0 or done == len(to_run):
-            print(f"  {done}/{len(to_run)}", flush=True)
+            typer.echo(f"  {done}/{len(to_run)}")
 
     try:
         ran = run(
@@ -131,112 +199,67 @@ def _run(args: argparse.Namespace) -> int:
             project,
             command=command,
             pytest_python=pytest_python,
-            tests=args.tests if args.tests is not None else config.tests,
-            pytest_args=shlex.split(args.pytest_args) if args.pytest_args is not None else config.pytest_args,
+            tests=tests or config.tests,
+            pytest_args=shlex.split(pytest_args) if pytest_args is not None else config.pytest_args,
             workers=workers,
-            timeout=args.timeout or config.timeout,
+            timeout=timeout or config.timeout,
             progress=progress,
         )
     except BaselineFailedError as error:
-        print(error, file=sys.stderr)
-        return 2
+        raise _fail(str(error)) from error
     ran_iter = iter(ran)
     results = [skipped[position] if position in skipped else next(ran_iter) for position in range(len(mutants))]
-    if args.report:
-        write_report(results, args.report)
+    if report_file:
+        write_report(results, report_file)
 
     counts: Counter[tuple[str, str]] = Counter((r.operator, r.status) for r in results)
-    print("\nper operator: " + " / ".join(_STATUSES))
+    typer.echo("\nper operator: " + " / ".join(_STATUSES))
     for name in sorted({r.operator for r in results}):
-        print(f"  {name:15} " + " / ".join(f"{counts[name, status]:5}" for status in _STATUSES))
+        typer.echo(f"  {name:15} " + " / ".join(f"{counts[name, status]:5}" for status in _STATUSES))
     survivors = [r for r in results if r.status in {SURVIVED, NOT_COVERED}]
     groups = report.group(survivors)
-    print(f"\n{len(survivors)} of {len(results)} mutants survived or were not covered, in {len(groups)} groups")
-    print(report.render(groups, args.top))
-    return 1 if survivors else 0
+    typer.echo(f"\n{len(survivors)} of {len(results)} mutants survived or were not covered, in {len(groups)} groups")
+    typer.echo(report.render(groups, top))
+    if survivors:
+        raise typer.Exit(1)
 
 
-def _report(args: argparse.Namespace) -> int:
-    statuses = set(args.status.split(","))
-    results = [r for r in report.load(args.report_file) if r.status in statuses]
+@app.command("report")
+def report_command(
+    report_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    status: Annotated[str, typer.Option(help="Comma-separated statuses.")] = f"{SURVIVED},{NOT_COVERED}",
+    top: Top = 30,
+) -> None:
+    """Group the results of a JSON report by the code they changed."""
+    statuses = set(status.split(","))
+    results = [r for r in report.load(report_file) if r.status in statuses]
     groups = report.group(results)
-    print(f"{len(results)} results with status {', '.join(sorted(statuses))}, in {len(groups)} groups")
-    print(report.render(groups, args.top))
-    return 0
+    typer.echo(f"{len(results)} results with status {', '.join(sorted(statuses))}, in {len(groups)} groups")
+    typer.echo(report.render(groups, top))
 
 
-def _accept(args: argparse.Namespace) -> int:
-    operators = set(args.operators.split(",")) if args.operators else None
+@app.command("accept")
+def accept_command(
+    report_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    operators: Annotated[
+        str | None, typer.Option(help="Accept only survivors of these comma-separated operators.")
+    ] = None,
+    project: Project = Path(),
+    accepted_file: AcceptedFile = None,
+) -> None:
+    """Accept the survivors of a JSON report after review; later runs neither rerun nor report them."""
+    chosen = set(operators.split(",")) if operators else None
     survivors = [
         r
-        for r in report.load(args.report_file)
-        if r.status in {SURVIVED, NOT_COVERED} and (operators is None or r.operator in operators)
+        for r in report.load(report_file)
+        if r.status in {SURVIVED, NOT_COVERED} and (chosen is None or r.operator in chosen)
     ]
-    config = load_config(args.project)
-    path = args.project / (args.accepted or config.accepted or _DEFAULT_ACCEPTED)
+    path = project / (accepted_file or _config(project, None, None).accepted or _DEFAULT_ACCEPTED)
     known = accepted.load(path)
     new = {accepted.of_result(r) for r in survivors} - known
     accepted.save(path, known | new)
-    print(f"accepted {len(new)} more survivors; {path} now holds {len(known | new)}")
-    return 0
+    typer.echo(f"accepted {len(new)} more survivors; {path} now holds {len(known | new)}")
 
 
-def _add_selection(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("files", nargs="*", type=Path, help="SQL files (default: files in [tool.pysqlmut])")
-    parser.add_argument("--dialect", help="sqlglot dialect, e.g. snowflake, duckdb, bigquery")
-    parser.add_argument("--operators", help=f"comma-separated subset of: {', '.join(ALL_OPERATORS)}")
-    parser.add_argument("--project", type=Path, default=Path.cwd(), help="project root (default: .)")
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="pysqlmut", description="Mutation testing for SQL.")
-    commands = parser.add_subparsers(dest="command_name", required=True)
-
-    # Mutants are not stored anywhere, so listing them means generating them; "list" stays as an alias.
-    generate_parser = commands.add_parser(
-        "generate", aliases=["list"], help="generate and verify the mutants of SQL files without running tests"
-    )
-    _add_selection(generate_parser)
-    generate_parser.add_argument(
-        "--show", action="store_true", help="print every mutant with its line before and after"
-    )
-    generate_parser.set_defaults(handler=_generate)
-
-    run_parser = commands.add_parser("run", help="run the tests against every mutant")
-    _add_selection(run_parser)
-    how = run_parser.add_mutually_exclusive_group()
-    how.add_argument("--command", help="shell command that runs all tests; a new process per mutant")
-    how.add_argument(
-        "--pytest",
-        metavar="PYTHON",
-        help="the project's Python, e.g. 'uv run python': long-lived pytest workers that run only the tests "
-        "reading the mutated file",
-    )
-    run_parser.add_argument("--tests", nargs="*", help="pytest paths to collect (with --pytest)")
-    run_parser.add_argument("--pytest-args", help="extra pytest options (with --pytest)")
-    run_parser.add_argument("--workers", type=int, help="parallel copies of the project")
-    run_parser.add_argument("--timeout", type=float, help="seconds before a run counts as timeout")
-    run_parser.add_argument("--accepted", help=f"accepted survivors file (default: {_DEFAULT_ACCEPTED})")
-    run_parser.add_argument("--report", type=Path, help="write every result as JSON")
-    run_parser.add_argument("--top", type=int, default=30, help="how many survivor groups to print")
-    run_parser.set_defaults(handler=_run)
-
-    report_parser = commands.add_parser("report", help="group the results of a JSON report")
-    report_parser.add_argument("report_file", type=Path)
-    report_parser.add_argument("--status", default=f"{SURVIVED},{NOT_COVERED}", help="comma-separated statuses")
-    report_parser.add_argument("--top", type=int, default=30, help="how many groups to print")
-    report_parser.set_defaults(handler=_report)
-
-    accept_parser = commands.add_parser("accept", help="accept the survivors of a JSON report after review")
-    accept_parser.add_argument("report_file", type=Path)
-    accept_parser.add_argument("--operators", help="accept only survivors of these comma-separated operators")
-    accept_parser.add_argument("--project", type=Path, default=Path.cwd(), help="project root (default: .)")
-    accept_parser.add_argument("--accepted", help=f"accepted survivors file (default: {_DEFAULT_ACCEPTED})")
-    accept_parser.set_defaults(handler=_accept)
-
-    args = parser.parse_args(argv)
-    try:
-        return args.handler(args)
-    except (UsageError, ValueError) as error:
-        print(f"pysqlmut: {error}", file=sys.stderr)
-        return 2
+def main() -> None:
+    app()
