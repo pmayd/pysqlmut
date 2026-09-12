@@ -105,11 +105,11 @@ SELECT a FROM t WHERE b = 4;
     assert sorted({m.line for m in mutants}) == [2, 6]
 
 
-LABEL_BLOCKS = """SELECT 'are' AS code_field, 'are_text' AS text_field, are AS code, COUNT(*) AS n FROM inv GROUP BY ALL
+LABEL_BLOCKS = """SELECT 'product' AS kind, 'product_name' AS label, product AS code, COUNT(*) AS n FROM s GROUP BY ALL
 UNION ALL
-(SELECT 'are' AS code_field, 'short_name_are' AS text_field, are AS code, COUNT(*) AS n FROM inv GROUP BY ALL)
+(SELECT 'product' AS kind, 'product_short_name' AS label, product AS code, COUNT(*) AS n FROM s GROUP BY ALL)
 UNION ALL
-SELECT DISTINCT 'company', 'company_text', company, 1 FROM inv;
+SELECT DISTINCT 'store', 'store_name', store, 1 FROM s;
 """
 
 
@@ -123,11 +123,11 @@ def test_union_all_stays_where_every_row_is_already_unique():
     ("old", "new"),
     [
         # The first two branches can return the same row.
-        ("'short_name_are' AS text_field", "'are_text' AS text_field"),
+        ("'product_short_name' AS label", "'product_name' AS label"),
         # The last branch can return the same row twice.
-        ("SELECT DISTINCT 'company'", "SELECT 'company'"),
+        ("SELECT DISTINCT 'store'", "SELECT 'store'"),
         # A string and a number may compare equal after conversion.
-        ("'short_name_are' AS text_field, are AS code, COUNT(*) AS n", "1 AS text_field, are AS code, 7 AS n"),
+        ("'product_short_name' AS label, product AS code, COUNT(*) AS n", "1 AS label, product AS code, 7 AS n"),
     ],
 )
 def test_union_all_changes_where_rows_may_repeat(old, new):
@@ -135,26 +135,26 @@ def test_union_all_changes_where_rows_may_repeat(old, new):
 
 
 COLUMNS = """WITH months AS (
-    SELECT gid, freeze_month, next_month FROM inv
+    SELECT customer_id, order_month, next_month FROM calendar
 )
 SELECT
-    f.gid,
-    f.hires AS hiring,
-    f.hires_former_apprentices AS apprentices,
-    f.action_reason,
+    o.customer_id,
+    o.discount AS discount,
+    o.discount_rate AS rate,
+    o.shipping_status,
     m.next_month
-FROM fluc AS f
-INNER JOIN months AS m ON f.gid = m.gid;
+FROM orders AS o
+INNER JOIN months AS m ON o.customer_id = m.customer_id;
 """
 
 
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        # The columns share the word "hires"; action_reason shares none.
-        ("f.hires AS hiring", "f.hires_former_apprentices AS hiring"),
-        # freeze_month is not read by this SELECT but is an output of the CTE m names.
-        ("m.next_month\nFROM", "m.freeze_month\nFROM"),
+        # The columns share the word "discount"; shipping_status shares none.
+        ("o.discount AS discount", "o.discount_rate AS discount"),
+        # order_month is not read by this SELECT but is an output of the CTE m names.
+        ("m.next_month\nFROM", "m.order_month\nFROM"),
     ],
 )
 def test_a_column_is_replaced_by_the_likeliest_mix_up_of_the_same_table(old, new):
@@ -162,10 +162,10 @@ def test_a_column_is_replaced_by_the_likeliest_mix_up_of_the_same_table(old, new
 
 
 def test_columns_in_group_by_and_exclude_lists_stay():
-    sql = "SELECT inv.* EXCLUDE (a, b), inv.c, inv.d FROM inv GROUP BY inv.c, inv.d;\n"
+    sql = "SELECT sales.* EXCLUDE (a, b), sales.c, sales.d FROM sales GROUP BY sales.c, sales.d;\n"
     mutants = mutated(sql, "column")
     assert mutants
-    assert all("EXCLUDE (a, b)" in mutant and "GROUP BY inv.c, inv.d;" in mutant for mutant in mutants)
+    assert all("EXCLUDE (a, b)" in mutant and "GROUP BY sales.c, sales.d;" in mutant for mutant in mutants)
 
 
 def test_a_process_pool_generates_the_same_mutants_in_the_same_order():

@@ -6,11 +6,36 @@ readme = "README.md"
 authors = [
     { name = "Michael Aydinbas", email = "michael.aydinbas@pm.me" }
 ]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+keywords = ["sql", "mutation testing", "testing", "sqlglot", "pytest", "duckdb", "data engineering"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: SQL",
+    "Topic :: Database",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
-    "sqlglot>=30.18",
+    # sqlglot changes its expression classes between major versions, which the operators rely on.
+    "sqlglot>=30.18,<31",
     "typer>=0.27.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/pmayd/pysqlmut"
+Repository = "https://github.com/pmayd/pysqlmut"
+Issues = "https://github.com/pmayd/pysqlmut/issues"
+Changelog = "https://github.com/pmayd/pysqlmut/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pysqlmut = "pysqlmut:main"

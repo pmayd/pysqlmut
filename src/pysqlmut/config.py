@@ -1,7 +1,7 @@
 """Settings from [tool.pysqlmut] in the project's pyproject.toml; command line options override them.
 
 [tool.pysqlmut]
-dialect = "snowflake"
+dialect = "duckdb"
 files = ["sql/*.sql"]
 exclude-operators = ["union"]
 accepted = "pysqlmut-accepted.json"
@@ -14,7 +14,7 @@ tests = ["tests/sql"]
 args = ["-q", "-x"]
 
 [[tool.pysqlmut.file]]
-pattern = "scripts/sql/labels.sql"
+pattern = "sql/labels.sql"
 exclude-operators = ["string-literal"]
 """
 
