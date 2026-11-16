@@ -7,6 +7,12 @@ settings or the report format.
 
 ## [Unreleased]
 
+### Fixed
+
+- With `--pytest`, a worker that ends before running any test, for example because the project's Python has no
+  pytest, is reported as a setup problem with exit code 3 instead of an internal error on macOS, and the
+  message names the likely cause.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added

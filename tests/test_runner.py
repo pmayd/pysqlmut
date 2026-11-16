@@ -220,6 +220,13 @@ def test_a_failing_baseline_stops_the_run(project):
         run(mutants_of(project / "paid.sql", "comparison"), project, timeout=60, **MODES["pytest workers"])
 
 
+def test_a_worker_that_ends_at_start_is_reported_as_a_setup_problem(project):
+    # Like a Python without pytest: the worker ends before it answers.
+    ends = f"{sys.executable} -c 'raise SystemExit(1)'"
+    with pytest.raises(BaselineFailedError, match="worker stopped before running the tests"):
+        run(mutants_of(project / "paid.sql", "comparison"), project, timeout=60, pytest_command=ends)
+
+
 def _assert_ended(pid: int) -> None:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:

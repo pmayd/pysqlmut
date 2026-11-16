@@ -108,7 +108,9 @@ def _env(project: Path, copy: Path) -> dict[str, str]:
 
 def _kill(process: subprocess.Popen[Any]) -> None:
     """End a process started in a session of its own, together with everything it started."""
-    with suppress(ProcessLookupError):
+    # macOS refuses with a permission error, instead of reporting no such process, when the process has
+    # exited and not been waited for yet.
+    with suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGKILL)
     process.wait()
 
@@ -198,6 +200,8 @@ class PytestWorker:
         self.command = [*shlex.split(python), str(script)]
         self.process: subprocess.Popen[str] | None = None
         self.stopped = False
+        # Whether the last request found the worker ended rather than out of time.
+        self.ended = False
 
     def _start(self) -> subprocess.Popen[str]:
         if self.stopped:
@@ -223,11 +227,14 @@ class PytestWorker:
             process.stdin.write(json.dumps(payload) + "\n")
             process.stdin.flush()
         except BrokenPipeError:
+            self.ended = True
             self._close()
             return None
         ready, _, _ = select.select([process.stdout], [], [], timeout)
         line = process.stdout.readline() if ready else ""
         if not line:
+            # Readable but empty means the worker closed its output, so it ended instead of running too long.
+            self.ended = bool(ready)
             self._close()
             return None
         return json.loads(line)
@@ -237,6 +244,11 @@ class PytestWorker:
         request = {"args": args, "record": True, "watch": [str(p) for p in watched]}
         response = self._request(request, max(self.timeout, _BASELINE_TIMEOUT))
         rerun = f"{self.python} -m pytest {shlex.join(args)}"
+        if response is None and self.ended:
+            raise BaselineFailedError(
+                f"the pytest worker stopped before running the tests; check that {self.python} starts the "
+                f"project's Python with pytest installed, and see the error above. To compare, run: {rerun}"
+            )
         if response is None:
             raise BaselineFailedError(f"pytest does not finish on the unchanged project; try: {rerun}")
         if response["exit"] != 0:
