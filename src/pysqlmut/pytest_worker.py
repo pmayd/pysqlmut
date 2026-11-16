@@ -10,7 +10,8 @@ Requests:
   each test read: {"exit": code, "reads": {test id: [paths]}}. A read while a fixture is set up counts for every
   test that uses the fixture; a read outside any test, for example while modules are imported, is listed under
   the empty test id. Test ids are relative to the working directory, so they can be passed back as arguments.
-- {"args": [...]} runs pytest in a fork and answers {"exit": code}.
+- {"args": [...]} runs pytest in a fork and answers {"exit": code, "failed": [test ids]}, listing every test
+  that failed in its setup, its call or its teardown.
 
 Every run after the recording happens in a fork that no longer holds the project's modules. Files read at
 import, cached by a function or kept by a fixture are therefore read again, while third-party modules stay
@@ -80,29 +81,58 @@ class _ReadRecorder:
             self.fixture_reads.setdefault(name, set()).add(path)
 
 
+class _FailureRecorder:
+    """Pytest plugin that notes every test that fails, whether in its setup, its call or its teardown."""
+
+    def __init__(self) -> None:
+        self.current = ""
+        self.failed: set[str] = set()
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_runtest_protocol(self, item: pytest.Item) -> Generator[None, Any, Any]:
+        self.current = _test_id(item)
+        try:
+            return (yield)
+        finally:
+            self.current = ""
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        if report.failed and self.current:
+            self.failed.add(self.current)
+
+
 def _loaded_from(module: Any, root: str) -> bool:
     paths = [getattr(module, "__file__", None), *(getattr(module, "__path__", None) or [])]
     return any(isinstance(path, str) and os.path.realpath(path).startswith(root + os.sep) for path in paths)
 
 
-def _run_forked(args: list[str]) -> int:
-    """Run pytest in a fork without the modules loaded from the project."""
+def _run_forked(args: list[str]) -> tuple[int, list[str]]:
+    """Run pytest in a fork without the modules loaded from the project; the exit code and the failed tests."""
     # The virtual environment inside the copy is a link, so its real path lies outside the copy.
     root = os.path.realpath(os.curdir)
+    read_end, write_end = os.pipe()
     pid = os.fork()
     if pid == 0:
+        os.close(read_end)
         # Exit code 4 counts as an error, not as a caught mutant.
         code = 4
         try:
             for name, module in list(sys.modules.items()):
                 if _loaded_from(module, root):
                     del sys.modules[name]
-            code = int(pytest.main(args))
+            recorder = _FailureRecorder()
+            code = int(pytest.main(args, plugins=[recorder]))
+            with os.fdopen(write_end, "w") as failed:
+                json.dump(sorted(recorder.failed), failed)
         finally:
             os._exit(code)
+    os.close(write_end)
+    # Read before waiting, so that a long list cannot block the fork on a full pipe.
+    with os.fdopen(read_end) as failed:
+        sent = failed.read()
     code = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
     # A negative code means the fork was killed by a signal.
-    return code if code >= 0 else 4
+    return (code, json.loads(sent) if sent else []) if code >= 0 else (4, [])
 
 
 def main() -> None:
@@ -135,7 +165,8 @@ def main() -> None:
             reads = {test: sorted(paths) for test, paths in recorder.reads.items() if paths}
             response: dict[str, Any] = {"exit": int(code), "reads": reads}
         else:
-            response = {"exit": _run_forked(request["args"])}
+            code, failed = _run_forked(request["args"])
+            response = {"exit": code, "failed": failed}
         responses.write(json.dumps(response) + "\n")
 
 

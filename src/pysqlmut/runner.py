@@ -55,6 +55,9 @@ class Result:
     after: str
     # How many tests the mutant ran; None means every test the command or the test paths collect.
     tests: int | None = None
+    # The tests that failed on a caught mutant, known only with pytest workers. Empty when pytest stopped before
+    # any test failed, for example because the mutant broke a test module.
+    caught_by: tuple[str, ...] | None = None
 
 
 class SetupError(RuntimeError):
@@ -116,7 +119,10 @@ def _tail(output: bytes, lines: int = 20) -> str:
 
 class Worker(Protocol):
     def baseline(self, watched: Sequence[Path]) -> dict[str, list[str]] | None: ...
-    def run(self, selection: Selection) -> str: ...
+    def run(self, selection: Selection) -> tuple[str, tuple[str, ...] | None]:
+        """The mutant's status and, if known, the tests that caught it."""
+        ...
+
     def stop(self) -> None: ...
 
 
@@ -162,9 +168,9 @@ class CommandWorker:
             )
         return None
 
-    def run(self, selection: Selection) -> str:
+    def run(self, selection: Selection) -> tuple[str, tuple[str, ...] | None]:
         code, _ = self._run(self.timeout)
-        return TIMEOUT if code is None else CAUGHT if code != 0 else SURVIVED
+        return (TIMEOUT if code is None else CAUGHT if code != 0 else SURVIVED), None
 
     def stop(self) -> None:
         self.stopped = True
@@ -239,16 +245,18 @@ class PytestWorker:
             )
         return response["reads"]
 
-    def run(self, selection: Selection) -> str:
+    def run(self, selection: Selection) -> tuple[str, tuple[str, ...] | None]:
         tests = self.tests if selection.tests is None else list(selection.tests)
         response = self._request({"args": [*tests, *self.args]}, self.timeout)
         if response is None:
             if self.stopped:
                 raise WorkerStoppedError
-            return TIMEOUT
+            return TIMEOUT, None
         if response["exit"] == 0:
-            return SURVIVED
-        return CAUGHT if response["exit"] in _CAUGHT_EXIT_CODES else ERROR
+            return SURVIVED, None
+        if response["exit"] in _CAUGHT_EXIT_CODES:
+            return CAUGHT, tuple(response["failed"])
+        return ERROR, None
 
     def _close(self) -> None:
         process = self.process
@@ -378,6 +386,7 @@ def run(
             selection = selections[relative]
             started = time.monotonic()
             count: int | None = 0
+            caught_by: tuple[str, ...] | None = None
             if accepted_survivors.fingerprint(
                 relative.as_posix(), mutant.operator, mutant.description, before, after
             ) in (accepted):
@@ -390,7 +399,7 @@ def run(
                 target = copy / relative
                 try:
                     target.write_text(mutant.apply(original), encoding="utf-8", newline="")
-                    status = worker.run(selection)
+                    status, caught_by = worker.run(selection)
                 finally:
                     target.write_text(original, encoding="utf-8", newline="")
                     free.put((worker, copy))
@@ -404,6 +413,7 @@ def run(
                 before.strip(),
                 after.strip(),
                 count,
+                caught_by,
             )
             if progress:
                 progress(result)

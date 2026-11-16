@@ -117,6 +117,12 @@ each SQL file is read by only a few tests, it is much faster than `--command`.
 
 *Survivors* are the mutants that survived or were not covered.
 
+With `--pytest`, the report also names the tests that caught each mutant, in `caught_by` in the JSON report and
+under each example of `pysqlmut report --status caught`. A test counts when it fails in its setup, its call or
+its teardown. The list is empty when pytest stopped before any test failed, for example because the mutant broke
+a test module. `-x` or `--maxfail` in the pytest options stops pytest early, so the list then holds only the
+tests that failed before it stopped. `--command` sees only an exit code and names no tests.
+
 | Exit code | When |
 |---|---|
 | 0 | every mutant was caught or accepted |
@@ -182,7 +188,7 @@ Runs the tests against every mutant and prints the results grouped by the code t
 | `--command COMMAND` | shell command that runs your tests, started anew for every mutant; see [Choosing a runner](#choosing-a-runner) | required, unless `--pytest` is given | `command` |
 | `--pytest COMMAND` | command that starts your project's Python, for the pytest runner | required, unless `--command` is given | `pytest.command` |
 | `--tests PATH` | pytest path to collect; repeat the option for several paths | pytest's own settings | `pytest.tests` |
-| `--pytest-args "ARGS"` | extra pytest options in one string, such as `"-q -x"` | none | `pytest.args` |
+| `--pytest-args "ARGS"` | extra pytest options in one string, such as `"-q -x"`; `-x` makes runs faster but leaves only the first failed test in `caught_by` | none | `pytest.args` |
 | `--workers N` | copies of the project that test mutants in parallel, and processes that generate them | 1 | `workers` |
 | `--timeout SECONDS` | time one mutant's tests may take before the mutant counts as timeout; the first run of the unchanged tests gets at least 600 seconds | 300 | `timeout` |
 | `--accepted PATH` | file of accepted survivors; the option is relative to the working directory, the setting to the project | `pysqlmut-accepted.json` in the project | `accepted` |
@@ -191,7 +197,8 @@ Runs the tests against every mutant and prints the results grouped by the code t
 
 ### `pysqlmut report REPORT_FILE`
 
-Prints the results of a JSON report again, grouped by the code they changed.
+Prints the results of a JSON report again, grouped by the code they changed. For a caught mutant found with
+`--pytest`, each example also names the tests that caught it.
 
 | Argument or option | Meaning | Default | Setting |
 |---|---|---|---|
@@ -233,7 +240,7 @@ timeout = 180   # seconds per mutant
 [tool.pysqlmut.pytest]
 command = "uv run python"   # the command that starts your project's Python
 tests = ["tests/sql"]
-args = ["-q", "-x"]
+args = ["-q"]
 
 [[tool.pysqlmut.file]]
 pattern = "sql/labels.sql"
