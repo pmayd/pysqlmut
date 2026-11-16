@@ -328,6 +328,20 @@ def test_tests_below_their_own_pytest_ini_are_selected_from_the_project_root(tmp
     assert [(r.status, r.tests) for r in results] == [(CAUGHT, 1)]
 
 
+def test_tests_imported_as_namespace_packages_are_run_for_every_mutant(tmp_path):
+    root = tmp_path / "namespaces"
+    # Without __init__.py files, pytest's importlib mode imports python and python.tests as namespace packages.
+    (root / "python" / "tests").mkdir(parents=True)
+    (root / "paid.sql").write_text(PAID)
+    (root / "python" / "tests" / "test_paid.py").write_text(
+        textwrap.dedent(TEST_BELOW_PROJECT).replace("parent.parent", "parent.parent.parent")
+    )
+    options: dict[str, Any] = {**MODES["pytest workers"], "tests": ["python/tests"]}
+    options["pytest_args"] = [*options["pytest_args"], "--import-mode=importlib"]
+    results = run(mutants_of(root / "paid.sql", "aggregate"), root, timeout=60, **options)
+    assert [r.status for r in results] == [CAUGHT]
+
+
 TEST_IMPORTS_CONFIG = """
 from pathlib import Path
 

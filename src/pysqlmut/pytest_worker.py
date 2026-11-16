@@ -117,9 +117,11 @@ def _run_forked(args: list[str]) -> tuple[int, list[str]]:
         # Exit code 4 counts as an error, not as a caught mutant.
         code = 4
         try:
-            for name, module in list(sys.modules.items()):
-                if _loaded_from(module, root):
-                    del sys.modules[name]
+            # The path of a namespace package is looked up through its parent package in sys.modules, so every
+            # module is checked before the first one is removed.
+            project_modules = [name for name, module in list(sys.modules.items()) if _loaded_from(module, root)]
+            for name in project_modules:
+                del sys.modules[name]
             recorder = _FailureRecorder()
             code = int(pytest.main(args, plugins=[recorder]))
             with os.fdopen(write_end, "w") as failed:

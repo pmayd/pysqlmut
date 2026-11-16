@@ -12,6 +12,9 @@ settings or the report format.
 - With `--pytest`, a worker that ends before running any test, for example because the project's Python has no
   pytest, is reported as a setup problem with exit code 3 instead of an internal error on macOS, and the
   message names the likely cause.
+- With `--pytest`, mutants of a project whose tests are imported as namespace packages, for example with
+  `--import-mode=importlib` and test directories without `__init__.py`, are run and reported as caught or
+  survived instead of all ending as errors.
 
 ## [0.2.0] - 2026-11-16
 
