@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from samples import PAID, TEST_PAID
 
+from pysqlmut import report
 from pysqlmut.mutants import generate
 from pysqlmut.runner import CAUGHT, NOT_COVERED, SURVIVED, TIMEOUT, BaselineFailedError, ProjectReadError, _env, run
 from pysqlmut.source import SqlSource
@@ -68,6 +69,50 @@ def test_a_mutant_that_changes_the_result_is_caught_and_an_invisible_one_survive
     assert statuses["WHERE status = 'paid' AND amount > 0 -> WHERE status <> 'paid' AND amount > 0"] == CAUGHT
     assert statuses["WHERE status = 'paid' AND amount > 0 -> WHERE status = 'paid' AND amount >= 0"] == SURVIVED
     assert (project / "paid.sql").read_text() == PAID
+
+
+# Checks only which customers have paid orders, and does so in a fixture: a failure while a fixture is set up
+# also counts as catching the mutant.
+TEST_PAID_CUSTOMERS = """
+from pathlib import Path
+
+import duckdb
+import pytest
+
+
+@pytest.fixture
+def paid_customers():
+    con = duckdb.connect()
+    con.execute("CREATE TABLE orders (customer VARCHAR, amount INT, status VARCHAR)")
+    con.execute("INSERT INTO orders VALUES ('a', 5, 'paid'), ('b', 2, 'paid'), ('c', 4, 'open')")
+    customers = [row[0] for row in con.execute((Path(__file__).parent / "paid.sql").read_text()).fetchall()]
+    assert customers == ["a", "b"]
+    return customers
+
+
+def test_paid_customers(paid_customers):
+    pass
+"""
+
+
+def test_each_caught_mutant_lists_every_test_that_caught_it(project, tmp_path):
+    (project / "test_paid_customers.py").write_text(textwrap.dedent(TEST_PAID_CUSTOMERS))
+    mutants = mutants_of(project / "paid.sql", "drop-condition", "aggregate")
+    caught_by = {
+        f"{r.before} -> {r.after}": r.caught_by for r in run(mutants, project, timeout=60, **MODES["pytest workers"])
+    }
+    assert caught_by["WHERE status = 'paid' AND amount > 0 -> WHERE amount > 0"] == (
+        "test_paid.py::test_paid_totals",
+        "test_paid_customers.py::test_paid_customers",
+    )
+    assert caught_by["SELECT customer, SUM(amount) AS total -> SELECT customer, MAX(amount) AS total"] == (
+        "test_paid.py::test_paid_totals",
+    )
+    assert caught_by["WHERE status = 'paid' AND amount > 0 -> WHERE status = 'paid'"] is None
+
+    path = tmp_path / "report.json"
+    report.save(run(mutants, project, timeout=60, **MODES["command"]), path)
+    assert {r.caught_by for r in report.load(path)} == {None}
 
 
 def test_pytest_workers_run_only_the_tests_that_read_the_mutated_file(project):

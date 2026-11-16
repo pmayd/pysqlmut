@@ -7,6 +7,17 @@ settings or the report format.
 
 ## [Unreleased]
 
+### Added
+
+- With `--pytest`, every caught mutant records the tests that caught it: `caught_by` in the JSON report, and a
+  `caught by` line under each example of `pysqlmut report --status caught`. A failure in a test's setup or
+  teardown counts; `-x` or `--maxfail` leaves only the tests that failed before pytest stopped. Reports
+  written by earlier versions still load.
+
+### Changed
+
+- The configuration example in the README no longer passes `-x` to pytest, which would shorten `caught_by`.
+
 ## [0.1.1] - 2026-09-13
 
 ### Changed

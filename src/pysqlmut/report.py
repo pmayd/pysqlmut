@@ -61,7 +61,20 @@ def load(path: Path) -> list[Result]:
     if not isinstance(data, dict) or data.get("version") != _VERSION:
         raise ValueError(f"{path} is not a pysqlmut report of version {_VERSION}")
     names = {field.name for field in fields(Result)}
-    return [Result(**{key: value for key, value in item.items() if key in names}) for item in data["results"]]
+    results = []
+    for item in data["results"]:
+        values = {key: value for key, value in item.items() if key in names}
+        if values.get("caught_by") is not None:
+            values["caught_by"] = tuple(values["caught_by"])
+        results.append(Result(**values))
+    return results
+
+
+def _catchers(tests: tuple[str, ...], shown: int = 5) -> str:
+    if not tests:
+        return "no single test; pytest stopped before any test failed, for example on a test module that broke"
+    names = ", ".join(tests[:shown])
+    return names + (f" and {len(tests) - shown} more" if len(tests) > shown else "")
 
 
 def render(groups: Sequence[Group], limit: int) -> str:
@@ -72,6 +85,8 @@ def render(groups: Sequence[Group], limit: int) -> str:
         lines.append(f"       e.g. {example.path}:{example.line}")
         lines.append(f"         - {example.before}")
         lines.append(f"         + {example.after}")
+        if example.caught_by is not None:
+            lines.append(f"         caught by: {_catchers(example.caught_by)}")
     hidden = len(groups) - len(groups[:limit])
     if hidden > 0:
         lines.append(f"  ... and {hidden} smaller groups")
