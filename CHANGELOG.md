@@ -7,6 +7,8 @@ settings or the report format.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
 ### Added
 
 - With `--pytest`, every caught mutant records the tests that caught it: `caught_by` in the JSON report, and a
@@ -52,6 +54,7 @@ First release.
 - Survivors grouped by the shape of the lines they changed, and versioned JSON reports.
 - A getting-started guide with an example project, a roadmap, and a security policy.
 
-[Unreleased]: https://github.com/pmayd/pysqlmut/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/pmayd/pysqlmut/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pmayd/pysqlmut/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/pmayd/pysqlmut/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/pmayd/pysqlmut/releases/tag/v0.1.0
